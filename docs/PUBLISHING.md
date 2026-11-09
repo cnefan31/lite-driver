@@ -33,7 +33,18 @@ gh secret set NUGET_USER --env release --body "cnefan31" -R cnefan31/lite-driver
 
 三项任一不符，OIDC 令牌缺少对应声明，交换会报 401。`LiteDriver.Hosting` 若也要用同一策略发布，在策略里可另建一条或使用 Repository 通配；本仓库两个包共用同一 workflow，同一策略即可覆盖。
 
-## 二、发布一个版本
+## 二、发版前先演练（推荐）
+
+`release.yml` 原本只在打 tag 时触发，无法提前验证。现在支持手动 dry-run：走完构建、测试、打包、包内容校验，跳过 OIDC 换取与 NuGet 推送。
+
+```bash
+gh workflow run release.yml -f dry_run=true -f version=1.0.0
+gh run watch
+```
+
+只在 tag 推送时才会创建 GitHub Release。演练通过再打 tag，可避免"发版时才发现流水线有问题"。
+
+## 三、发布一个版本
 
 ```bash
 # 1. 确认 main 干净且 CI 绿
@@ -47,7 +58,7 @@ git push origin v1.0.0
 
 workflow 自动执行：语义化版本校验 → 还原 → 构建（警告视为错误）→ 回归测试 → 示例端到端 → 打包 → 包内容校验 → OIDC 换 key → 推送 NuGet → 创建 GitHub Release。
 
-## 三、验证发布成功
+## 四、验证发布成功
 
 ```bash
 # 1. 网页可见（立即可见）
@@ -66,7 +77,7 @@ dotnet build
 
 只看到 workflow 绿不算发布成功——必须验证能从官方源安装并编译。
 
-## 四、常见失败与排查
+## 五、常见失败与排查
 
 | 症状 | 原因 | 处理 |
 | --- | --- | --- |
@@ -77,7 +88,7 @@ dotnet build
 | AOT smoke 失败 | 新增代码引入反射或动态代码 | 看 CI 的 IL2026/IL3050/IL2072 告警，改用源生成或静态工厂 |
 | `--skip-duplicate` 导致空推送 | 版本号已存在 | NuGet 不允许覆盖同版本，改版本号重新打 tag |
 
-## 五、版本号规则
+## 六、版本号规则
 
 - 遵循语义化版本：`MAJOR.MINOR.PATCH`，可选 `-preview.1` 后缀
 - 破坏性变更升 MAJOR；新增能力且兼容升 MINOR；修复升 PATCH
