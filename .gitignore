@@ -1,0 +1,26 @@
+## .NET
+bin/
+obj/
+artifacts/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.vscode/
+*.nupkg
+*.snupkg
+TestResults/
+[Aa]rtifacts/
+
+## NativeAOT / publish output
+publish/
+dist/
+*.dSYM/
+*.dbg
+*.pdb
+
+## OS
+.DS_Store
+Thumbs.db
+.rsrs-*.json

@@ -1,0 +1,1233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>LiteDriver · C#/NativeAOT 工业 TCP 连接库架构设计审阅稿</title>
+  <style>
+    :root {
+      --bg: #f3f6fa;
+      --paper: #ffffff;
+      --ink: #172231;
+      --muted: #5b6b7c;
+      --line: #d8e1ea;
+      --line-strong: #afbdcc;
+      --accent: #0a66c2;
+      --accent-soft: #eaf3fc;
+      --teal: #0d8b7d;
+      --teal-soft: #e8f6f3;
+      --amber: #a76007;
+      --amber-soft: #fff5e3;
+      --red: #ae2b23;
+      --red-soft: #fdecea;
+      --code-bg: #101b2b;
+      --code-ink: #e7edf5;
+      --shadow: 0 14px 38px rgba(20, 38, 62, 0.08);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.72 var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .page {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 28px 28px 72px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+    }
+    .toc {
+      position: sticky;
+      top: 24px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 20px 16px;
+      box-shadow: var(--shadow);
+      font-size: 13px;
+    }
+    .toc .toc-title {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin: 0 0 10px;
+    }
+    .toc ol { list-style: none; padding: 0; margin: 0; counter-reset: toc; }
+    .toc li { counter-increment: toc; margin: 3px 0; }
+    .toc a { display: block; padding: 5px 8px; border-radius: 7px; color: #344456; }
+    .toc a::before { content: counter(toc, decimal-leading-zero); color: var(--accent); margin-right: 9px; font-family: var(--mono); font-size: 11px; }
+    .toc a:hover { background: var(--accent-soft); text-decoration: none; }
+    .document {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .hero {
+      padding: 48px 54px 38px;
+      color: #f4f8fc;
+      background: linear-gradient(135deg, #12253b 0%, #163e63 58%, #0b5c7a 100%);
+      position: relative;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -10% -70px 55%;
+      height: 180px;
+      background: radial-gradient(ellipse at center, rgba(68, 190, 210, .30), transparent 68%);
+      pointer-events: none;
+    }
+    .eyebrow { font: 12px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: #9fc6e8; margin: 0 0 16px; }
+    h1 { font-size: clamp(30px, 4vw, 48px); line-height: 1.18; letter-spacing: -.025em; margin: 0 0 14px; font-weight: 680; }
+    .subtitle { max-width: 830px; color: #c8d9e8; font-size: 17px; margin: 0; }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; position: relative; z-index: 1; }
+    .badge { display: inline-flex; align-items: center; gap: 7px; border: 1px solid rgba(255,255,255,.24); background: rgba(255,255,255,.08); color: #eaf3fa; border-radius: 999px; padding: 5px 12px; font-size: 12px; }
+    .badge.ok { border-color: rgba(72, 210, 180, .42); color: #b7f2e3; }
+    .badge.warn { border-color: rgba(255, 194, 110, .44); color: #ffdda6; }
+    .content { padding: 36px 54px 60px; }
+    section { scroll-margin-top: 24px; margin-top: 52px; }
+    section:first-child { margin-top: 0; }
+    .section-head { display: flex; align-items: baseline; gap: 14px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 22px; }
+    .section-no { color: var(--accent); font: 600 13px/1 var(--mono); letter-spacing: .08em; }
+    h2 { font-size: 25px; line-height: 1.35; letter-spacing: -.015em; margin: 0; font-weight: 650; }
+    h3 { font-size: 18px; line-height: 1.45; margin: 30px 0 12px; font-weight: 640; }
+    h4 { font-size: 15px; margin: 20px 0 8px; font-weight: 640; }
+    p { margin: 0 0 14px; }
+    ul, ol { padding-left: 22px; margin: 0 0 16px; }
+    li { margin: 5px 0; }
+    .lead { font-size: 17px; color: #34475c; }
+    .muted { color: var(--muted); }
+    .small { font-size: 13px; }
+    .mono { font-family: var(--mono); }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      border-radius: 0 10px 10px 0;
+      padding: 15px 18px;
+      margin: 18px 0 24px;
+    }
+    .callout.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+    .callout.danger { border-left-color: var(--red); background: var(--red-soft); }
+    .callout p:last-child { margin-bottom: 0; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 18px 19px;
+    }
+    .card h4 { margin-top: 0; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .card.accent { background: var(--accent-soft); border-color: #b9d8f2; }
+    .card.teal { background: var(--teal-soft); border-color: #b7dfd7; }
+    .card.warn { background: var(--amber-soft); border-color: #eed2a3; }
+    .kpi { font: 650 22px/1.2 var(--mono); color: var(--accent); margin: 0 0 7px; }
+    .tag { display: inline-block; font: 11px/1.4 var(--mono); border: 1px solid var(--line-strong); color: #3e5367; border-radius: 5px; padding: 2px 7px; margin: 0 4px 4px 0; background: #f9fbfd; }
+    .tag.aot { color: #075f55; border-color: #9dd8ce; background: var(--teal-soft); }
+    .tag.no { color: #8d2d23; border-color: #e9bbb5; background: var(--red-soft); }
+    .tag.review { color: #8a5106; border-color: #e5c48d; background: var(--amber-soft); }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0 22px; font-size: 14px; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); padding: 10px 12px; }
+    th { color: #34495c; background: #f7fafd; font-weight: 640; border-top: 1px solid var(--line); }
+    tr:last-child td { border-bottom: 1px solid var(--line); }
+    td:first-child { white-space: nowrap; }
+    .table-wrap { overflow-x: auto; }
+    code { font-family: var(--mono); font-size: .92em; color: #0b4f91; background: #f1f6fb; border-radius: 4px; padding: 1px 5px; }
+    pre { margin: 14px 0 22px; background: var(--code-bg); color: var(--code-ink); border-radius: 11px; padding: 18px 20px; overflow-x: auto; border: 1px solid #23344a; font: 13px/1.7 var(--mono); }
+    pre code { padding: 0; background: transparent; color: inherit; font: inherit; }
+    .diagram {
+      border: 1px solid var(--line);
+      background: #fbfdff;
+      border-radius: 13px;
+      padding: 14px;
+      margin: 18px 0 8px;
+      overflow-x: auto;
+    }
+    .diagram svg { display: block; width: 100%; min-width: 900px; height: auto; }
+    .figcaption { color: var(--muted); font-size: 13px; margin: 0 0 28px; }
+    .svg-layer { fill: #fff; stroke: #c8d6e3; stroke-width: 1.2; }
+    .svg-layer-strong { fill: #eef5fc; stroke: #8fb9df; stroke-width: 1.3; }
+    .svg-box { fill: #fff; stroke: #b8c9d9; stroke-width: 1; rx: 8; }
+    .svg-box-blue { fill: #e8f2fc; stroke: #82b4e2; stroke-width: 1.1; }
+    .svg-box-teal { fill: #e7f6f2; stroke: #7fc9bc; stroke-width: 1.1; }
+    .svg-box-warn { fill: #fff4df; stroke: #e0b86e; stroke-width: 1.1; }
+    .svg-box-dark { fill: #17324e; stroke: #17324e; }
+    .svg-title { font: 650 15px var(--sans); fill: #1b3048; }
+    .svg-label { font: 600 13px var(--sans); fill: #243a50; }
+    .svg-small { font: 12px var(--sans); fill: #566b80; }
+    .svg-tiny { font: 11px var(--mono); fill: #60758a; }
+    .svg-light { fill: #e7f1fa; }
+    .svg-light-text { font: 600 13px var(--sans); fill: #e7f1fa; }
+    .svg-line { stroke: #7c94aa; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    .svg-line-blue { stroke: var(--accent); stroke-width: 1.7; fill: none; marker-end: url(#arrow-blue); }
+    .svg-line-teal { stroke: var(--teal); stroke-width: 1.7; fill: none; marker-end: url(#arrow-teal); }
+    .svg-line-warn { stroke: var(--amber); stroke-width: 1.6; fill: none; marker-end: url(#arrow-warn); }
+    .svg-note { fill: #fffaf0; }
+    .svg-dash { stroke-dasharray: 5 4; }
+    .pipeline { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin: 16px 0 8px; }
+    .pipe-step { flex: 1 1 128px; min-width: 128px; border: 1px solid #bdd2e5; background: #f7fbff; border-radius: 10px; padding: 12px 10px; text-align: center; font-size: 12px; line-height: 1.5; position: relative; }
+    .pipe-step b { display: block; color: #17324e; font-size: 13px; margin-bottom: 4px; }
+    .pipe-step:not(:last-child)::after { content: "→"; position: absolute; right: -14px; top: 50%; transform: translateY(-50%); color: var(--accent); font-weight: 700; z-index: 2; background: #fff; border-radius: 50%; padding: 0 2px; }
+    .pipe-step.critical { background: var(--amber-soft); border-color: #e0b86e; }
+    .steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 16px 0 12px; }
+    .step { border: 1px solid var(--line); border-radius: 10px; padding: 13px; background: #fff; position: relative; min-height: 112px; }
+    .step .num { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; font: 600 12px var(--mono); margin-bottom: 8px; }
+    .step b { display: block; font-size: 13px; margin-bottom: 4px; }
+    .step span { color: var(--muted); font-size: 12px; line-height: 1.55; display: block; }
+    .step:not(:last-child)::after { content: "→"; position: absolute; right: -13px; top: 46px; color: var(--accent); font-weight: 700; z-index: 2; background: #fff; }
+    .seq { border: 1px solid var(--line); border-radius: 11px; overflow: hidden; margin: 16px 0 24px; }
+    .seq-row { display: grid; grid-template-columns: 54px 150px minmax(0, 1fr) 260px; border-bottom: 1px solid var(--line); font-size: 13px; }
+    .seq-row:last-child { border-bottom: 0; }
+    .seq-row > div { padding: 10px 12px; border-right: 1px solid var(--line); }
+    .seq-row > div:last-child { border-right: 0; }
+    .seq-head { background: #f1f6fb; color: #39516a; font-weight: 640; }
+    .seq-no { font-family: var(--mono); color: var(--accent); }
+    .invariant { color: #0c6e62; background: #f4fbf9; }
+    .decision { border: 1px solid #e0c189; background: #fffaf0; border-radius: 11px; padding: 14px 16px; margin: 12px 0; }
+    .decision b { color: #7d4a05; }
+    .checklist { list-style: none; padding: 0; }
+    .checklist li { position: relative; padding-left: 26px; margin: 9px 0; }
+    .checklist li::before { content: ""; width: 13px; height: 13px; border: 1.5px solid var(--accent); border-radius: 3px; position: absolute; left: 0; top: 5px; }
+    .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); margin-right: 7px; vertical-align: 1px; }
+    .footer { border-top: 1px solid var(--line); margin-top: 50px; padding-top: 20px; color: var(--muted); font-size: 13px; }
+    .source-list { font-size: 13px; }
+    .source-list li { margin: 8px 0; }
+    @media (max-width: 1080px) {
+      .layout { grid-template-columns: 1fr; }
+      .toc { position: static; }
+      .toc ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .hero, .content { padding-left: 32px; padding-right: 32px; }
+    }
+    @media (max-width: 760px) {
+      .page { padding: 12px 12px 40px; }
+      .hero, .content { padding-left: 20px; padding-right: 20px; }
+      .grid-2, .grid-3, .steps { grid-template-columns: 1fr; }
+      .step:not(:last-child)::after { display: none; }
+      .toc ol { grid-template-columns: 1fr; }
+      .seq-row { grid-template-columns: 44px 110px minmax(0, 1fr); }
+      .seq-row > div:nth-child(4) { display: none; }
+      table { font-size: 13px; }
+    }
+    @media print {
+      body { background: #fff; }
+      .page { max-width: none; padding: 0; }
+      .layout { display: block; }
+      .toc { display: none; }
+      .document { border: 0; border-radius: 0; box-shadow: none; }
+      .hero { color: #172231; background: #fff; border-bottom: 2px solid #172231; padding: 24px 0; }
+      .hero::after, .hero-meta { display: none; }
+      .hero h1, .subtitle, .eyebrow { color: #172231; }
+      .content { padding: 24px 0; }
+      section { break-inside: auto; margin-top: 34px; }
+      .diagram, .card, .decision, .seq, pre, table { break-inside: avoid; }
+      .diagram { overflow: visible; }
+      .diagram svg { min-width: 0; }
+      a { color: #172231; }
+    }
+  </style>
+</head>
+<body>
+<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7c94aa"/></marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0a66c2"/></marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0d8b7d"/></marker>
+    <marker id="arrow-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#a76007"/></marker>
+  </defs>
+</svg>
+<div class="page">
+  <div class="layout">
+    <nav class="toc" aria-label="目录">
+      <p class="toc-title">审阅目录</p>
+      <ol>
+        <li><a href="#summary">结论与审阅边界</a></li>
+        <li><a href="#research">现有实现调研</a></li>
+        <li><a href="#goals">目标、非目标与硬约束</a></li>
+        <li><a href="#architecture">总体架构与包边界</a></li>
+        <li><a href="#dynamic">AOT 下的动态创建</a></li>
+        <li><a href="#state">生命周期与重连状态机</a></li>
+        <li><a href="#robust">连接稳健性与命令语义</a></li>
+        <li><a href="#api">公开 API 草案</a></li>
+        <li><a href="#config">配置与事务化变更</a></li>
+        <li><a href="#observability">可观测性与资源上限</a></li>
+        <li><a href="#verification">AOT 与测试验收</a></li>
+        <li><a href="#decisions">请确认的设计决策</a></li>
+        <li><a href="#sources">参考资料</a></li>
+      </ol>
+    </nav>
+
+    <main class="document">
+      <header class="hero">
+        <p class="eyebrow">Architecture Review · Draft 0.1 · 2026-11-10</p>
+        <h1>LiteDriver：轻量 C# / NativeAOT<br>工业 TCP 连接库</h1>
+        <p class="subtitle">面向工业 SOCKET Client / Server 设备的可复用连接管理层。覆盖主动拨号、被动接入、断线重连、运行时增改删、帧编解码、请求关联与显式命令结果语义。</p>
+        <div class="hero-meta">
+          <span class="badge warn">状态：待审阅，尚未实现</span>
+          <span class="badge ok">核心：零 NuGet 依赖</span>
+          <span class="badge ok">AOT：静态工厂 + 源生成 JSON</span>
+          <span class="badge">工作区：当前为空</span>
+          <span class="badge">文档：单文件、离线可渲染</span>
+        </div>
+      </header>
+
+      <div class="content">
+        <section id="summary">
+          <div class="section-head"><span class="section-no">01</span><h2>结论与审阅边界</h2></div>
+          <p class="lead">建议做一个只管“连接、帧、生命周期、可恢复性”的薄内核，不把 PLC 协议、业务命令、DI 容器、消息总线和磁盘队列塞进核心。协议差异通过启动时静态注册的工厂委托注入；运行时只按配置创建已编译类型的新实例。</p>
+          <div class="grid-3">
+            <div class="card accent">
+              <div class="kpi">1 + 2</div>
+              <b>核心 + 可选适配</b>
+              <p class="small"><code>LiteDriver.Core</code> 零依赖；<code>LiteDriver.Hosting</code>、<code>LiteDriver.Logging</code> 可选。AOT 兼容性由独立 smoke app 验证。</p>
+            </div>
+            <div class="card teal">
+              <div class="kpi">4 层标识</div>
+              <b>Generation / Epoch / ConnectionId / RequestId</b>
+              <p class="small">分别隔离配置代、物理连接代、单条 socket、单条请求。旧回调、旧半包、旧响应不得进入新链路。</p>
+            </div>
+            <div class="card warn">
+              <div class="kpi">0 次</div>
+              <b>写命令自动重放</b>
+              <p class="small">断线、超时、切换端点后，结果只能是 <code>SentOutcomeUnknown</code>。业务要重试，必须自行提供幂等键或状态读回。</p>
+            </div>
+          </div>
+
+          <div class="callout warn">
+            <p><b>审阅边界。</b>本稿是架构设计，不是实现报告。工作区 <code>/Users/cnefan31/development/lite-driver</code> 当前为空；尚未创建 C# 项目、尚未编译、尚未发布 NativeAOT、尚未连接真实工业设备。文中默认值、测试矩阵和阶段划分均为待审批提案。</p>
+            <p>已核实：本机 <code>dotnet --version</code> 为 <code>10.0.201</code>；本 HTML 不加载任何外部样式、字体、脚本或图片；公开资料链接见第 13 节。</p>
+          </div>
+
+          <h3>一句话架构</h3>
+          <p><b>Driver 是唯一资源所有者；每个逻辑设备有一个 Supervisor；每条物理连接有一个不可变 ConnectionContext 和一套全新协议栈；配置变更走单写者事务；NativeAOT 下只允许显式工厂创建，不允许运行时发现类型。</b></p>
+          <p>这样可以把“轻量”落到可检验的约束上：核心只有一个程序集，不依赖第三方包，不启反射扫描，不创建设备专用常驻线程，所有队列和帧长度有上限，停机时可等待全部受管任务退出。</p>
+        </section>
+
+        <section id="research">
+          <div class="section-head"><span class="section-no">02</span><h2>现有实现调研与取舍</h2></div>
+          <p>调研目标不是选一个现成库直接依赖，而是抽取工业 TCP 场景已经被验证的边界。尤其要区分“借鉴架构思路”与“把第三方程序集放进 NativeAOT 依赖树”：后者必须实测，本文不作未验证的兼容承诺。</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>来源</th><th>已核实的做法 / 约束</th><th>本设计借鉴</th><th>本设计不采用</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><a href="https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/">Microsoft · Native AOT deployment</a></td>
+                  <td>无 JIT、按 RID 发布、必须裁剪；禁止 <code>Assembly.LoadFile</code> 与 <code>Reflection.Emit</code>；<code>IsAotCompatible</code> 开启裁剪/AOT/单文件分析器；建议库至少包含 <code>net8.0</code>。</td>
+                  <td>把 AOT 作为发布期与 CI 的硬门禁；库声明 <code>IsAotCompatible</code>，应用设置 <code>PublishAot</code>。</td>
+                  <td>不用运行时插件加载、程序集扫描、动态代理和运行时生成泛型代码。</td>
+                </tr>
+                <tr>
+                  <td><a href="https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/source-generation">Microsoft · STJ source generation</a></td>
+                  <td><code>JsonSerializerContext</code> / <code>JsonTypeInfo&lt;T&gt;</code> 重载；<code>object</code> 运行时类型需显式登记；可关闭反射默认；NativeAOT 不支持非泛型 <code>JsonStringEnumConverter</code>。</td>
+                  <td>全部配置 DTO 静态登记；扩展参数用 <code>JsonElement</code> 固定键校验；关闭反射式 JSON。</td>
+                  <td>不用 <code>Deserialize(string, Type)</code>、开放式多态和 <code>Dictionary&lt;string, object&gt;</code>。</td>
+                </tr>
+                <tr>
+                  <td><a href="https://learn.microsoft.com/en-us/dotnet/api/system.net.sockets.socket?view=net-10.0">Microsoft · Socket</a></td>
+                  <td>异步方法可传 <code>CancellationToken</code>；可取消重载返回 <code>ValueTask</code>；发送必须循环写完整；<code>Connected</code> 只反映最近一次 I/O；接收 0 字节表示对端优雅关闭。</td>
+                  <td>连接、读、写、握手、退避都有取消令牌与超时；写完整帧后释放锁；链路活性不依赖 <code>Connected</code>。</td>
+                  <td>不把一次 Send 成功解释为设备收到或执行。</td>
+                </tr>
+                <tr>
+                  <td><a href="https://www.touchsocket.net/docs/current/adapterdescription">TouchSocket 4.3 · 数据适配器</a></td>
+                  <td>TCP 是流式单线程，存在粘包/半包；固定包头、固定长度、终止符、字符区间四类分包；适配器必须用工厂委托按终端新建；有 <code>MaxPackageSize</code>、缓存超时。</td>
+                  <td><code>IFrameCodec</code> 每条连接新建；限制最大帧；半帧缓存超时后丢弃并拆链；编解码与业务分离。</td>
+                  <td>不照搬整套插件/RPC/协议组件，不共享有状态 decoder 单例。</td>
+                </tr>
+                <tr>
+                  <td><a href="https://www.touchsocket.net/docs/3.1/reconnection">TouchSocket 3.1 · 断线重连</a><br><a href="https://www.touchsocket.net/docs/current/tcpcommonplugins">4.3 · 活性检查</a></td>
+                  <td>旧版重连文档明示：首次连接需已成功、主动 Close 不触发、拔网线需等 TCP 保活到期；默认只查 <code>Online</code>，可用自定义检查发心跳。4.3 的 CheckClear 定时检查收发活跃度，并提示 OS 定时器会有延迟。</td>
+                  <td>把“主动停止”与“被动断开”拆开；用应用层 Ping/Pong 判死；冷启动失败不阻塞 <code>StartAsync</code>；定时器用注入时钟测试。</td>
+                  <td>不以 3.1 的旧 API 行为推断 4.3；不以 TCP keepalive 或 <code>Online</code> 作为 Ready 判据。</td>
+                </tr>
+                <tr>
+                  <td><a href="https://www.touchsocket.net/docs/current/waitingclient">TouchSocket 4.3 · WaitingClient</a></td>
+                  <td>默认不筛选响应，可能拿到过期响应；高可靠场景建议在协议中加入 <code>requestId</code> 做请求与响应关联；简单等待机制存在锁竞争与接收器生命周期问题。</td>
+                  <td>单读泵 + <code>(Epoch, RequestId)</code> 待响应表；默认单在途；未知/重复/迟到帧进入事件通道。</td>
+                  <td>不用“下一个响应就是本次响应”的队列，也不在接收回调内同步等待响应。</td>
+                </tr>
+                <tr>
+                  <td><a href="https://docs.supersocket.net/v2-0/en-US/Some-Basic-Concepts-In-SuperSocket">SuperSocket 2.0 · 基本概念</a></td>
+                  <td>用 Package Type 表示业务包，用 PipelineFilter 把字节流解码成包；HostBuilder 组合包类型与过滤器。</td>
+                  <td>借鉴“传输字节流 / 帧 / 业务语义”三层分离；Codec 工厂与业务 API 独立。</td>
+                  <td>不引入完整 Command、泛型 PipelineFilter 体系和 HostBuilder 作为核心依赖。</td>
+                </tr>
+                <tr>
+                  <td><a href="https://github.com/dathlin/HslCommunication">HslCommunication</a></td>
+                  <td>README 展示工业 PLC 读写用 <code>OperateResult&lt;T&gt;</code> 显式表达成功、内容与失败信息，并区分短连接与 <code>SetPersistentConnection()</code> 长连接；README 标明商业高级功能授权要求。</td>
+                  <td>借鉴“显式结果类型”和长连接生命周期的语义价值；命令返回可区分 Ack 与执行结果。</td>
+                  <td>不复制代码，不内置品牌 PLC 协议，不将其作为 NativeAOT 依赖；兼容性未实测。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout">
+            <p><b>调研结论。</b>工业现场的问题不是“怎样调用 <code>ConnectAsync</code>”，而是半开连接、旧响应、写命令结果未知、设备重启后身份变化、配置热变更和发布期裁剪。现有库的架构价值集中在适配器、活性检查和显式结果；本设计把这些作为核心语义，把协议族、RPC、业务框架留在外面。</p>
+          </div>
+        </section>
+
+        <section id="goals">
+          <div class="section-head"><span class="section-no">03</span><h2>目标、非目标与硬约束</h2></div>
+          <div class="grid-2">
+            <div class="card">
+              <h4>目标</h4>
+              <ul>
+                <li>同时管理两类链路：主动连接设备侧 TCP Server；自身监听并接受设备侧 TCP Client。</li>
+                <li>运行时新增、更新、删除设备与监听端点，且变更失败可回滚。</li>
+                <li>断线后按指数退避与抖动重连，支持多端点、DNS 重解析、身份校验与端点冷却。</li>
+                <li>提供可插拔帧层：固定长度、长度前缀、终止符以及应用自定义 framer。</li>
+                <li>可测试的超时、心跳、故障注入、取消和优雅停机。</li>
+                <li>核心可被 .NET 8+ / .NET 10 的 NativeAOT 应用引用，发布时零 IL 裁剪/AOT 警告。</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h4>首版非目标</h4>
+              <ul>
+                <li>不实现 Modbus、S7、MC、FINS、SECS 等具体工业协议。</li>
+                <li>不提供运行时插件目录、动态程序集加载或按字符串反射创建类型。</li>
+                <li>不做 TLS、串口、UDP、WebSocket、HTTP、RPC。</li>
+                <li>不做磁盘持久化命令队列、消息总线、集群选主、Web 管理台。</li>
+                <li>不保证配置更新零中断；默认 break-before-make。</li>
+                <li>不自动重放写命令，也不替业务决定幂等策略。</li>
+              </ul>
+            </div>
+          </div>
+          <h3>硬约束</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>编号</th><th>约束</th><th>可检验方式</th></tr></thead>
+              <tbody>
+                <tr><td>C1</td><td><code>LiteDriver.Core</code> 零 <code>PackageReference</code>，只用 BCL。</td><td><code>dotnet pack</code> 后检查 nuspec 各 TFM 依赖组为空。</td></tr>
+                <tr><td>C2</td><td>多目标 <code>net8.0;net10.0</code>；<code>IsAotCompatible=true</code>；警告即错误。</td><td>双 TFM Release build + AOT smoke publish。</td></tr>
+                <tr><td>C3</td><td>配置 JSON 全走源生成，关闭反射式序列化。</td><td>负例测试：反射式重载抛异常；publish 无 IL2026 / IL3050。</td></tr>
+                <tr><td>C4</td><td>所有动态设备来自启动期冻结的显式工厂注册表。</td><td>未知 kind 拒绝；静态根检查；反射调用清单扫描。</td></tr>
+                <tr><td>C5</td><td>每条物理连接拥有独立 decoder、缓冲、写锁、心跳计数和 pending 表。</td><td>重连后旧半包、旧回调、旧 requestId 响应均不得投递。</td></tr>
+                <tr><td>C6</td><td>所有内存队列、帧长、在途请求有上限；所有异步 API 可取消。</td><td>背压、超时、取消、停机 drain 测试。</td></tr>
+                <tr><td>C7</td><td><code>Ready</code> 必须晚于 TCP 建连、应用握手、身份确认与首个合法帧。</td><td>握手拒绝、设备身份不匹配、静默 socket 均不得进入 Ready。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p><span class="tag aot">AOT 安全</span><span class="tag">零依赖核心</span><span class="tag">显式生命周期</span><span class="tag">有界队列</span><span class="tag no">禁止自动重放</span><span class="tag review">首版仅 TCP 明文</span></p>
+        </section>
+
+        <section id="architecture">
+          <div class="section-head"><span class="section-no">04</span><h2>总体架构与包边界</h2></div>
+          <p>核心按“公开 API → 编排 → 会话 → 协议 → 传输”单向依赖。时间源、观测者、限制和传输工厂由构造参数注入，不引入服务定位器。所有可变状态归 <code>ConnectionContext</code> 或 <code>DeviceLease</code> 所有。</p>
+
+          <div class="diagram">
+            <svg viewBox="0 0 1200 690" role="img" aria-labelledby="fig1-title fig1-desc">
+              <title id="fig1-title">图 1：LiteDriver 分层架构与 AOT 边界</title>
+              <desc id="fig1-desc">应用层通过公开 API 进入 Driver；编排层管理配置、设备和监听；会话层管理每条连接；协议层与传输层彼此分离；右侧是 NativeAOT 静态可达性边界。</desc>
+              <rect x="1" y="1" width="1198" height="688" rx="12" fill="#fbfdff" stroke="#d8e1ea"/>
+              <text x="24" y="28" class="svg-title">分层依赖：上层可调用下层，下层不得反向引用上层</text>
+
+              <rect x="28" y="44" width="920" height="70" rx="10" class="svg-layer"/>
+              <text x="44" y="68" class="svg-label">应用层 / 配置源 / 业务命令</text>
+              <text x="44" y="91" class="svg-small">调用 Driver；提供已编译的 IDeviceKind 实现；消费结构化事件与帧</text>
+              <rect x="690" y="55" width="110" height="46" rx="7" class="svg-box-blue"/><text x="745" y="83" text-anchor="middle" class="svg-label">业务代码</text>
+              <rect x="815" y="55" width="115" height="46" rx="7" class="svg-box-blue"/><text x="872" y="83" text-anchor="middle" class="svg-label">配置数据</text>
+
+              <path d="M 488 114 L 488 136" class="svg-line-blue"/>
+              <rect x="28" y="136" width="920" height="82" rx="10" class="svg-layer-strong"/>
+              <text x="44" y="160" class="svg-label">公开 API / Driver 门面</text>
+              <g>
+                <rect x="44" y="174" width="150" height="32" rx="6" class="svg-box"/><text x="119" y="195" text-anchor="middle" class="svg-small">LiteDriver</text>
+                <rect x="206" y="174" width="150" height="32" rx="6" class="svg-box"/><text x="281" y="195" text-anchor="middle" class="svg-small">DeviceHandle</text>
+                <rect x="368" y="174" width="150" height="32" rx="6" class="svg-box"/><text x="443" y="195" text-anchor="middle" class="svg-small">ListenerHandle</text>
+                <rect x="530" y="174" width="170" height="32" rx="6" class="svg-box"/><text x="615" y="195" text-anchor="middle" class="svg-small">DriverConfig / ApplyResult</text>
+                <rect x="712" y="174" width="218" height="32" rx="6" class="svg-box"/><text x="821" y="195" text-anchor="middle" class="svg-small">IDriverObserver / DriverSnapshot</text>
+              </g>
+
+              <path d="M 488 218 L 488 240" class="svg-line-blue"/>
+              <rect x="28" y="240" width="920" height="104" rx="10" class="svg-layer"/>
+              <text x="44" y="264" class="svg-label">编排层：唯一资源所有者，单写者事务</text>
+              <g>
+                <rect x="44" y="278" width="165" height="48" rx="7" class="svg-box-teal"/><text x="126" y="297" text-anchor="middle" class="svg-label">ConfigCoordinator</text><text x="126" y="314" text-anchor="middle" class="svg-tiny">Validate → Commit</text>
+                <rect x="221" y="278" width="150" height="48" rx="7" class="svg-box-teal"/><text x="296" y="297" text-anchor="middle" class="svg-label">DeviceRegistry</text><text x="296" y="316" text-anchor="middle" class="svg-tiny">DeviceId → Generation</text>
+                <rect x="383" y="278" width="170" height="48" rx="7" class="svg-box-teal"/><text x="468" y="297" text-anchor="middle" class="svg-label">OutboundSupervisor</text><text x="468" y="316" text-anchor="middle" class="svg-tiny">Connect / Retry / Epoch</text>
+                <rect x="565" y="278" width="170" height="48" rx="7" class="svg-box-teal"/><text x="650" y="297" text-anchor="middle" class="svg-label">ListenerSupervisor</text><text x="650" y="316" text-anchor="middle" class="svg-tiny">Bind / Accept / Sessions</text>
+                <rect x="747" y="278" width="183" height="48" rx="7" class="svg-box-teal"/><text x="838" y="297" text-anchor="middle" class="svg-label">Lifecycle / Lease</text><text x="838" y="316" text-anchor="middle" class="svg-tiny">CTS / Quiescence</text>
+              </g>
+
+              <path d="M 488 344 L 488 366" class="svg-line-blue"/>
+              <rect x="28" y="366" width="920" height="104" rx="10" class="svg-layer"/>
+              <text x="44" y="390" class="svg-label">会话层：每条物理连接一套，不跨重连复用</text>
+              <g>
+                <rect x="44" y="404" width="165" height="48" rx="7" class="svg-box"/><text x="126" y="423" text-anchor="middle" class="svg-label">ConnectionContext</text><text x="126" y="442" text-anchor="middle" class="svg-tiny">Epoch / CTS / Identity</text>
+                <rect x="221" y="404" width="135" height="48" rx="7" class="svg-box"/><text x="288" y="423" text-anchor="middle" class="svg-label">ReadPump</text><text x="288" y="442" text-anchor="middle" class="svg-tiny">ArrayPool buffer</text>
+                <rect x="368" y="404" width="135" height="48" rx="7" class="svg-box"/><text x="435" y="423" text-anchor="middle" class="svg-label">WriteQueue</text><text x="435" y="442" text-anchor="middle" class="svg-tiny">bounded, 1 writer</text>
+                <rect x="515" y="404" width="135" height="48" rx="7" class="svg-box"/><text x="582" y="423" text-anchor="middle" class="svg-label">Heartbeat</text><text x="582" y="442" text-anchor="middle" class="svg-tiny">seq · misses</text>
+                <rect x="662" y="404" width="135" height="48" rx="7" class="svg-box"/><text x="729" y="423" text-anchor="middle" class="svg-label">PendingTable</text><text x="729" y="442" text-anchor="middle" class="svg-tiny">(epoch, id)</text>
+                <rect x="809" y="404" width="121" height="48" rx="7" class="svg-box"/><text x="869" y="423" text-anchor="middle" class="svg-label">SessionProtocol</text><text x="869" y="442" text-anchor="middle" class="svg-tiny">per link</text>
+              </g>
+
+              <path d="M 280 470 L 280 492" class="svg-line"/>
+              <path d="M 710 470 L 710 492" class="svg-line"/>
+              <rect x="28" y="492" width="440" height="88" rx="10" class="svg-layer-strong"/>
+              <text x="44" y="516" class="svg-label">协议层 / 静态注册的 IDeviceKind</text>
+              <rect x="44" y="530" width="120" height="34" rx="6" class="svg-box-teal"/><text x="104" y="552" text-anchor="middle" class="svg-small">FrameCodec</text>
+              <rect x="176" y="530" width="120" height="34" rx="6" class="svg-box-teal"/><text x="236" y="552" text-anchor="middle" class="svg-small">Correlator</text>
+              <rect x="308" y="530" width="140" height="34" rx="6" class="svg-box-teal"/><text x="378" y="552" text-anchor="middle" class="svg-small">Initializer / Identity</text>
+              <rect x="492" y="492" width="456" height="88" rx="10" class="svg-layer-strong"/>
+              <text x="508" y="516" class="svg-label">传输层 / BCL System.Net.Sockets</text>
+              <rect x="508" y="530" width="130" height="34" rx="6" class="svg-box-blue"/><text x="573" y="552" text-anchor="middle" class="svg-small">OutboundConnector</text>
+              <rect x="650" y="530" width="120" height="34" rx="6" class="svg-box-blue"/><text x="710" y="552" text-anchor="middle" class="svg-small">TcpListener</text>
+              <rect x="782" y="530" width="146" height="34" rx="6" class="svg-box-blue"/><text x="855" y="552" text-anchor="middle" class="svg-small">EndpointResolver</text>
+
+              <rect x="28" y="600" width="920" height="62" rx="10" fill="#f4f8fc" stroke="#c8d6e3"/>
+              <text x="44" y="624" class="svg-label">横切设施：TimeProvider · DriverLimits · IDriverObserver · ITransportFactory · IChaosPolicy</text>
+              <text x="44" y="646" class="svg-small">全部由 Builder 显式注入；生产默认 NullChaos；测试用 FakeTimeProvider 与脚本化故障。</text>
+
+              <rect x="970" y="44" width="202" height="618" rx="10" fill="#fff8ea" stroke="#dfb974"/>
+              <text x="988" y="70" class="svg-title">NativeAOT 边界</text>
+              <text x="988" y="98" class="svg-small">允许的“动态”：</text>
+              <text x="988" y="120" class="svg-small">· 按冻结注册表创建实例</text>
+              <text x="988" y="142" class="svg-small">· 按不可变配置新建设备</text>
+              <text x="988" y="164" class="svg-small">· 增改删 endpoint / listener</text>
+              <text x="988" y="186" class="svg-small">· source-gen JSON 数据</text>
+              <line x1="988" y1="206" x2="1154" y2="206" stroke="#dfb974"/>
+              <text x="988" y="232" class="svg-small">禁止的“动态代码”：</text>
+              <text x="988" y="254" class="svg-small">· Assembly.Load*</text>
+              <text x="988" y="276" class="svg-small">· Reflection.Emit</text>
+              <text x="988" y="298" class="svg-small">· Type.GetType / Activator(Type)</text>
+              <text x="988" y="320" class="svg-small">· MakeGenericType</text>
+              <text x="988" y="342" class="svg-small">· 反射式 JSON / DI 扫描</text>
+              <line x1="988" y1="360" x2="1154" y2="360" stroke="#dfb974"/>
+              <text x="988" y="386" class="svg-small">发布期门禁：</text>
+              <text x="988" y="408" class="svg-small">· net8.0 / net10.0</text>
+              <text x="988" y="430" class="svg-small">· IsAotCompatible</text>
+              <text x="988" y="452" class="svg-small">· 零 IL 警告</text>
+              <text x="988" y="474" class="svg-small">· 原生二进制 smoke test</text>
+              <text x="988" y="496" class="svg-small">· nuspec 依赖组为空</text>
+              <line x1="988" y1="516" x2="1154" y2="516" stroke="#dfb974"/>
+              <text x="988" y="542" class="svg-small">新增协议实现 =</text>
+              <text x="988" y="564" class="svg-small">改源码、注册工厂、</text>
+              <text x="988" y="586" class="svg-small">重新编译并发布 AOT。</text>
+              <text x="988" y="622" class="svg-small">不是运行时装插件。</text>
+            </svg>
+          </div>
+          <p class="figcaption">图 1 · 分层架构。右侧边界是产品契约：运行时可以动态管理设备和端点，但不能动态产生新的本机代码。</p>
+
+          <h3>包边界</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>程序集</th><th>内容</th><th>依赖</th><th>AOT 责任</th></tr></thead>
+              <tbody>
+                <tr><td><code>LiteDriver.Core</code></td><td>API、状态机、Socket 传输、帧层接口、显式注册表、源生成配置 DTO、观测抽象、默认 framer 实现。</td><td>仅 BCL，零 NuGet。</td><td><code>IsAotCompatible</code>、零 IL 警告、静态可达。</td></tr>
+                <tr><td><code>LiteDriver.Hosting</code><br><span class="small muted">可选</span></td><td><code>IHostedService</code>、DI 注册扩展、把 <code>IOptions</code> 映射为 POCO 后调用同一个 <code>ValidateAndFreeze</code>。</td><td><code>Microsoft.Extensions.Hosting.Abstractions</code> 等。</td><td>不扫描程序集；不在 Core 放 <code>IServiceProvider</code>；单独 AOT smoke。</td></tr>
+                <tr><td><code>LiteDriver.Logging</code><br><span class="small muted">可选</span></td><td>把 <code>IDriverObserver</code> 事件桥接到 <code>ILogger</code>，日志方法使用 <code>[LoggerMessage]</code> 源生成。</td><td><code>Microsoft.Extensions.Logging.Abstractions</code>。</td><td>不反射读取事件属性；日志模板编译期固定。</td></tr>
+                <tr><td><code>LiteDriver.Protocols.*</code><br><span class="small muted">后续</span></td><td>某个具体工业协议族或厂商设备的 <code>IDeviceKind</code> 实现。</td><td>仅 Core + BCL。</td><td>每个工厂在 smoke app 静态根路径中执行一次。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p><b>命名说明：</b><code>LiteDriver</code> 是随工作区名称拟定的暂定名，尚未检查 NuGet 包名占用、商标或组织命名规范。此项列入第 12 节待确认。</p>
+
+          <h3>两种链路共用一个窄通道抽象</h3>
+          <div class="diagram">
+            <svg viewBox="0 0 1200 500" role="img" aria-labelledby="fig2-title fig2-desc">
+              <title id="fig2-title">图 2：出站设备与入站设备拓扑</title>
+              <desc id="fig2-desc">Driver 同时包含出站 Supervisor 与入站 Listener；配置变更进入 ConfigCoordinator；出站连接多个设备端点，入站接受设备连接；所有连接共用窄 IFrameChannel。</desc>
+              <rect x="1" y="1" width="1198" height="498" rx="12" fill="#fbfdff" stroke="#d8e1ea"/>
+              <text x="24" y="28" class="svg-title">同一 Driver 实例同时管理主动连接与被动接入；逻辑设备 ID 与物理连接 ID 分离</text>
+
+              <rect x="26" y="170" width="150" height="92" rx="10" class="svg-box-blue"/>
+              <text x="101" y="200" text-anchor="middle" class="svg-title">应用</text>
+              <text x="101" y="223" text-anchor="middle" class="svg-small">命令 / 配置 / 订阅</text>
+              <text x="101" y="244" text-anchor="middle" class="svg-tiny">业务不接触 Socket</text>
+
+              <rect x="220" y="55" width="430" height="372" rx="12" fill="#f3f8fd" stroke="#8fb9df" stroke-width="1.5"/>
+              <text x="240" y="82" class="svg-title">LiteDriver · 唯一资源所有者</text>
+              <rect x="240" y="98" width="390" height="52" rx="8" class="svg-box"/>
+              <text x="435" y="119" text-anchor="middle" class="svg-label">ConfigCoordinator / DeviceRegistry</text>
+              <text x="435" y="139" text-anchor="middle" class="svg-tiny">Atomic snapshot · Generation · single writer</text>
+              <rect x="240" y="166" width="185" height="86" rx="8" class="svg-box-teal"/>
+              <text x="332" y="190" text-anchor="middle" class="svg-label">OutboundSupervisor</text>
+              <text x="332" y="211" text-anchor="middle" class="svg-small">DNS → connect → handshake</text>
+              <text x="332" y="232" text-anchor="middle" class="svg-small">retry / heartbeat / epoch</text>
+              <rect x="445" y="166" width="185" height="86" rx="8" class="svg-box-teal"/>
+              <text x="537" y="190" text-anchor="middle" class="svg-label">ListenerSupervisor</text>
+              <text x="537" y="211" text-anchor="middle" class="svg-small">bind → accept → identity</text>
+              <text x="537" y="232" text-anchor="middle" class="svg-small">session per accepted socket</text>
+              <rect x="240" y="270" width="390" height="72" rx="8" class="svg-box-blue"/>
+              <text x="435" y="294" text-anchor="middle" class="svg-label">IFrameChannel · 窄公共抽象</text>
+              <text x="435" y="316" text-anchor="middle" class="svg-small">Direction · ConnectionId · State · SendFrameAsync · CloseAsync · FrameReceived</text>
+              <rect x="240" y="358" width="390" height="52" rx="8" class="svg-box"/>
+              <text x="435" y="379" text-anchor="middle" class="svg-label">DeviceHandle ↔ DeviceLease ↔ SessionContext</text>
+              <text x="435" y="399" text-anchor="middle" class="svg-tiny">DeviceId stable · ConnectionId changes each physical link</text>
+
+              <path d="M 176 205 L 220 205" class="svg-line-blue"/>
+              <text x="178" y="188" class="svg-tiny">Start / Apply</text>
+              <path d="M 425 98 L 425 40 L 196 40 L 196 170" class="svg-line-warn svg-dash"/>
+              <text x="230" y="32" class="svg-tiny">配置事务：Validate → Stage → Commit → Retire</text>
+
+              <rect x="720" y="62" width="198" height="70" rx="9" class="svg-box"/>
+              <text x="819" y="87" text-anchor="middle" class="svg-label">设备侧 TCP Server A</text>
+              <text x="819" y="109" text-anchor="middle" class="svg-tiny">press-01 · plc-a.local:502</text>
+              <rect x="942" y="62" width="198" height="70" rx="9" class="svg-box"/>
+              <text x="1041" y="87" text-anchor="middle" class="svg-label">备用端点 B</text>
+              <text x="1041" y="109" text-anchor="middle" class="svg-tiny">plc-b.local:502 · cooldown</text>
+              <path d="M 630 190 C 680 158 682 100 720 96" class="svg-line-teal"/>
+              <text x="646" y="152" class="svg-tiny">connect + app heartbeat</text>
+              <path d="M 630 205 C 700 205 770 48 942 62" class="svg-line svg-dash"/>
+              <text x="744" y="190" class="svg-tiny">endpoint rotation on transient failure</text>
+
+              <rect x="720" y="278" width="198" height="70" rx="9" class="svg-box"/>
+              <text x="819" y="303" text-anchor="middle" class="svg-label">设备侧 TCP Client C</text>
+              <text x="819" y="325" text-anchor="middle" class="svg-tiny">主动连入网关</text>
+              <rect x="942" y="278" width="198" height="70" rx="9" class="svg-box"/>
+              <text x="1041" y="303" text-anchor="middle" class="svg-label">设备侧 TCP Client D</text>
+              <text x="1041" y="325" text-anchor="middle" class="svg-tiny">未知身份默认拒绝</text>
+              <path d="M 720 304 C 680 304 660 230 630 216" class="svg-line-teal"/>
+              <text x="642" y="264" class="svg-tiny">accept + bind identity</text>
+              <path d="M 942 312 C 850 350 720 360 630 240" class="svg-line svg-dash"/>
+              <text x="780" y="358" class="svg-tiny">每个 accepted socket 独立 epoch / framer</text>
+
+              <rect x="220" y="448" width="920" height="36" rx="8" fill="#f4f8fc" stroke="#c8d6e3"/>
+              <text x="240" y="471" class="svg-small">IDriverObserver / Metrics：状态变化、重连原因、旧帧丢弃、心跳超时、写结果未知、配置事务、资源退出</text>
+              <path d="M 435 410 L 435 448" class="svg-line"/>
+            </svg>
+          </div>
+          <p class="figcaption">图 2 · 设备拓扑。出站与入站只在 <code>IFrameChannel</code> 汇合；拨号、监听和重连策略不会泄漏到 <code>DeviceHandle</code>。</p>
+
+          <div class="callout">
+            <p><b>为什么不是胖 Connection。</b>若把 <code>Connect()</code>、<code>Listen()</code>、<code>Reconnect()</code> 和协议方法塞进同一个类，服务端会话会暴露无意义的拨号 API，客户端配置会带监听端口，重连后还容易复用旧状态。这里只共用收发、状态、标识和关闭；连接来源由 Supervisor 决定。</p>
+          </div>
+        </section>
+
+        <section id="dynamic">
+          <div class="section-head"><span class="section-no">05</span><h2>AOT 下的动态创建</h2></div>
+          <p>本设计把两个常被混用的概念明确拆开：</p>
+          <div class="grid-2">
+            <div class="card teal">
+              <h4>运行时动态配置：支持</h4>
+              <ul>
+                <li>从配置数据新增设备、监听器、端点。</li>
+                <li>更新已有设备的重试、心跳、端点、协议参数。</li>
+                <li>删除设备并等待所有任务、socket、缓冲退出。</li>
+                <li>根据已注册 <code>kindId</code> 创建一批已编译类型的新实例。</li>
+              </ul>
+            </div>
+            <div class="card warn">
+              <h4>运行时动态代码：禁止</h4>
+              <ul>
+                <li>加载新 DLL 或扫描目录发现驱动。</li>
+                <li>按字符串 <code>Type.GetType</code> 或 <code>Activator.CreateInstance(Type)</code>。</li>
+                <li><code>Reflection.Emit</code>、<code>Expression.Compile</code>、运行时 <code>MakeGenericType</code>。</li>
+                <li>反射式 JSON 多态反序列化。</li>
+              </ul>
+            </div>
+          </div>
+
+          <h3>静态工厂注册表</h3>
+          <p><code>Builder.RegisterKind</code> 把字符串键绑定到 <code>Func&lt;KindRegistrationContext, IDeviceKind&gt;</code>。<code>StartAsync</code> 冻结注册表；之后 <code>ApplyAsync</code> 只能引用已注册键。<code>IDeviceKind</code> 不保存 <code>Type</code>，只在每次建立物理连接时调用 <code>CreateProtocol</code> 生成全新的 decoder、correlator、initializer、heartbeat 与 identity policy。</p>
+          <pre><code>// 启动期：所有分支在编译产物中静态可达
+var driver = new LiteDriverBuilder()
+    .RegisterKind("length-prefix-v1", static _ =&gt; new LengthPrefixKind())
+    .RegisterKind("line-device-v1",   static _ =&gt; new LineDeviceKind())
+    .UseTimeProvider(TimeProvider.System)
+    .UseObserver(observer)
+    .Build();
+
+// 运行期：只创建已编译类型的新实例；kindId 不是类型名
+await driver.ApplyAsync(config, ct);
+
+public interface IDeviceKind
+{
+    ISessionProtocol CreateProtocol(in ProtocolContext context);
+}
+
+public interface ISessionProtocol
+{
+    IFrameDecoder Decoder { get; }          // 每条物理连接新实例
+    IFrameEncoder Encoder { get; }
+    IRequestCorrelator Correlator { get; }  // 可返回 NoCorrelationPolicy
+    ISessionInitializer Initializer { get; }
+    IHeartbeatPolicy Heartbeat { get; }
+    IDeviceIdentityPolicy Identity { get; }
+    CommandPolicy Commands { get; }
+}</code></pre>
+          <p><code>ProtocolContext</code> 携带稳定的 <code>DeviceId</code>、<code>Direction</code>、冻结后的 <code>DriverLimits</code> 和已 <code>Clone()</code> 的 <code>JsonElement KindSettings</code>。设备种类实现负责校验自己的固定扩展键，例如长度字段字节序、最大帧长、unit id；校验失败在配置 Stage 阶段返回，不在首次收包时才暴露。</p>
+
+          <h3>源生成 JSON 契约</h3>
+          <pre><code>[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
+[JsonSerializable(typeof(DriverConfig))]
+[JsonSerializable(typeof(DeviceDescriptor))]
+[JsonSerializable(typeof(ListenerDescriptor))]
+[JsonSerializable(typeof(EndpointDescriptor))]
+[JsonSerializable(typeof(RetryOptions))]
+[JsonSerializable(typeof(HeartbeatOptions))]
+[JsonSerializable(typeof(DriverLimits))]
+[JsonSerializable(typeof(System.Text.Json.JsonElement))]
+internal partial class LiteDriverJsonContext : JsonSerializerContext { }
+
+// 只允许：
+var config = JsonSerializer.Deserialize(json, LiteDriverJsonContext.Default.DriverConfig);
+
+// 禁止：
+// JsonSerializer.Deserialize(json, runtimeType);
+// JsonSerializer.Deserialize&lt;T&gt;(json);   // 依赖反射默认值的重载</code></pre>
+          <p>核心与 smoke app 都设 <code>JsonSerializerIsReflectionEnabledByDefault=false</code>。枚举在 <code>net8.0</code> 下使用泛型 <code>JsonStringEnumConverter&lt;TEnum&gt;</code>；不使用 NativeAOT 不支持的非泛型转换器。配置中的可变集合在 <code>ValidateAndFreeze()</code> 中克隆为内部只读快照，避免业务持有引用后原地修改。</p>
+
+          <div class="callout warn">
+            <p><b>可达性不是标签保证的。</b><code>IsAotCompatible=true</code> 只启用分析器，不能证明每个工厂分支被保留。AOT smoke app 必须静态执行每个注册 kind 的创建路径，并在原生二进制里做一次真实 loopback 收发；否则未被静态引用的类型或值类型泛型实例化可能在发布后被裁掉。</p>
+          </div>
+        </section>
+
+        <section id="state">
+          <div class="section-head"><span class="section-no">06</span><h2>生命周期与重连状态机</h2></div>
+          <p><b>核心拆分：</b><code>RunState</code> 表示 Driver / DeviceLease 的对象生命周期，<code>LinkState</code> 表示某条链路的可用性。主动 Stop 与被动断线绝不走同一条恢复分支；<code>StartAsync</code> 只负责启动唯一 Supervisor，不等待无限重连成功。</p>
+
+          <div class="diagram">
+            <svg viewBox="0 0 1200 510" role="img" aria-labelledby="fig3-title fig3-desc">
+              <title id="fig3-title">图 3：Driver 生命周期与链路状态机</title>
+              <desc id="fig3-desc">上排是对象生命周期；下排是链路状态；字母标记对应图后的转移说明。</desc>
+              <rect x="1" y="1" width="1198" height="508" rx="12" fill="#fbfdff" stroke="#d8e1ea"/>
+              <text x="24" y="24" class="svg-title">RunState：对象生命周期（只启动一个 Supervisor；Stop 幂等；停止后旧回调不得复活）</text>
+
+              <rect x="40" y="48" width="170" height="54" rx="9" class="svg-box"/><text x="125" y="80" text-anchor="middle" class="svg-label">Created</text>
+              <rect x="270" y="48" width="170" height="54" rx="9" class="svg-box-blue"/><text x="355" y="80" text-anchor="middle" class="svg-label">Starting</text>
+              <rect x="500" y="48" width="170" height="54" rx="9" class="svg-box-teal"/><text x="585" y="80" text-anchor="middle" class="svg-label">Running</text>
+              <rect x="730" y="48" width="170" height="54" rx="9" class="svg-box-warn"/><text x="815" y="80" text-anchor="middle" class="svg-label">Stopping</text>
+              <rect x="960" y="48" width="170" height="54" rx="9" class="svg-box"/><text x="1045" y="80" text-anchor="middle" class="svg-label">Stopped / Disposed</text>
+              <path d="M 210 75 L 270 75" class="svg-line-blue"/><text x="216" y="41" class="svg-tiny">StartAsync</text>
+              <path d="M 440 75 L 500 75" class="svg-line-blue"/><text x="446" y="41" class="svg-tiny">supervisor launched</text>
+              <path d="M 670 75 L 730 75" class="svg-line-warn"/><text x="676" y="41" class="svg-tiny">StopAsync</text>
+              <path d="M 900 75 L 960 75" class="svg-line-warn"/><text x="906" y="41" class="svg-tiny">quiescence</text>
+              <text x="40" y="128" class="svg-small">StartAsync 在启动监督器后返回；设备未上电不会让调用无限挂起。需要等待可用链路时显式调用 WaitUntilReadyAsync(timeout, ct)。</text>
+
+              <line x1="24" y1="150" x2="1176" y2="150" stroke="#d8e1ea"/>
+              <text x="24" y="178" class="svg-title">LinkState：每个逻辑设备一条链路状态；每次物理连接递增 Epoch</text>
+              <text x="700" y="192" class="svg-tiny">TCP + 应用握手 + 身份 + 首帧</text>
+              <text x="902" y="192" class="svg-tiny">心跳未达阈值</text>
+
+              <rect x="36" y="204" width="140" height="56" rx="9" class="svg-box"/><text x="106" y="237" text-anchor="middle" class="svg-label">Idle</text>
+              <rect x="206" y="204" width="140" height="56" rx="9" class="svg-box"/><text x="276" y="237" text-anchor="middle" class="svg-label">Resolving</text>
+              <rect x="376" y="204" width="140" height="56" rx="9" class="svg-box"/><text x="446" y="237" text-anchor="middle" class="svg-label">Connecting</text>
+              <rect x="546" y="204" width="140" height="56" rx="9" class="svg-box"/><text x="616" y="237" text-anchor="middle" class="svg-label">Handshaking</text>
+              <rect x="716" y="204" width="140" height="56" rx="9" class="svg-box-teal"/><text x="786" y="237" text-anchor="middle" class="svg-label">Ready</text>
+              <rect x="886" y="204" width="140" height="56" rx="9" class="svg-box-warn"/><text x="956" y="237" text-anchor="middle" class="svg-label">Degraded</text>
+              <rect x="1056" y="204" width="110" height="56" rx="9" class="svg-box-warn"/><text x="1111" y="237" text-anchor="middle" class="svg-label">Reconnecting</text>
+              <path d="M 176 232 L 206 232" class="svg-line-blue"/>
+              <path d="M 346 232 L 376 232" class="svg-line-blue"/>
+              <path d="M 516 232 L 546 232" class="svg-line-blue"/>
+              <path d="M 686 232 L 716 232" class="svg-line-blue"/>
+              <path d="M 856 232 L 886 232" class="svg-line-warn"/>
+              <path d="M 1026 232 L 1056 232" class="svg-line-warn"/>
+
+              <rect x="376" y="330" width="170" height="56" rx="9" class="svg-box-warn"/><text x="461" y="363" text-anchor="middle" class="svg-label">RetryWait</text>
+              <rect x="646" y="330" width="190" height="56" rx="9" fill="#fdecea" stroke="#e3aaa4"/><text x="741" y="363" text-anchor="middle" class="svg-label">Faulted</text>
+              <rect x="926" y="330" width="170" height="56" rx="9" class="svg-box"/><text x="1011" y="363" text-anchor="middle" class="svg-label">Stopped</text>
+
+              <path d="M 446 260 C 446 292 446 300 461 330" class="svg-line-warn"/>
+              <circle cx="452" cy="295" r="11" fill="#17324e"/><text x="452" y="299" text-anchor="middle" fill="#fff" font-family="monospace" font-size="11">A</text>
+              <path d="M 616 260 C 616 300 660 300 710 330" class="svg-line-warn"/>
+              <circle cx="660" cy="300" r="11" fill="#17324e"/><text x="660" y="304" text-anchor="middle" fill="#fff" font-family="monospace" font-size="11">B</text>
+              <path d="M 1111 260 C 1111 294 1060 300 1011 330" class="svg-line"/>
+              <circle cx="1080" cy="295" r="11" fill="#17324e"/><text x="1080" y="299" text-anchor="middle" fill="#fff" font-family="monospace" font-size="11">C</text>
+              <path d="M 1130 260 L 1170 260 L 1170 410 L 461 410 L 461 386" class="svg-line-warn svg-dash"/>
+              <circle cx="800" cy="410" r="11" fill="#17324e"/><text x="800" y="414" text-anchor="middle" fill="#fff" font-family="monospace" font-size="11">D</text>
+              <path d="M 376 358 L 306 358 L 306 260" class="svg-line-warn svg-dash"/>
+              <circle cx="306" cy="306" r="11" fill="#17324e"/><text x="306" y="310" text-anchor="middle" fill="#fff" font-family="monospace" font-size="11">E</text>
+
+              <text x="40" y="466" class="svg-small">Faulted 用于认证拒绝、协议版本不匹配、设备身份不匹配等确定性错误；状态保持并发出事件，不对设备无限紧循环重拨。</text>
+              <text x="40" y="490" class="svg-small">Degraded 默认只发心跳，不接收新业务命令；达到连续未响应阈值即关闭 socket、作废 epoch、排空 pending，再进入 Reconnecting。</text>
+            </svg>
+          </div>
+          <p class="figcaption">图 3 · 两套正交状态。冷启动失败、被动断线、认证拒绝和主动停止分别有明确出口。</p>
+          <div class="grid-2">
+            <div class="card">
+              <h4>图中转移标记</h4>
+              <ul class="small">
+                <li><b>A</b>：<code>Connecting</code> 遇到拒绝、超时、DNS 失败，进入 <code>RetryWait</code>。</li>
+                <li><b>B</b>：<code>Handshaking</code> 遇到身份或协议拒绝，进入 <code>Faulted</code>。</li>
+                <li><b>C</b>：任意链路状态收到主动 Stop，进入 <code>Stopped</code>。</li>
+                <li><b>D</b>：<code>Reconnecting</code> 按退避与抖动等待，生成新 <code>attemptGeneration</code>、重解析 DNS，进入 <code>RetryWait</code>。</li>
+                <li><b>E</b>：<code>RetryWait</code> 到期后重试下一端点，回到 <code>Resolving</code>。</li>
+              </ul>
+            </div>
+            <div class="card warn">
+              <h4>图中刻意不画的事</h4>
+              <p class="small">不画 <code>Ready → Connecting</code> 的直接跳线。链路失效必须先关闭当前 epoch、作废 pending、丢弃半帧，再由唯一 Supervisor 进入重连；该过程在下方时序图展开。</p>
+              <p class="small">不把服务端 accept 循环塞进客户端状态机；服务端会话有独立的 SessionContext 与容量上限。</p>
+            </div>
+          </div>
+
+          <h3>重连规则</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>阶段</th><th>规则</th><th>防错点</th></tr></thead>
+              <tbody>
+                <tr><td>尝试代</td><td>每轮生成 <code>attemptGeneration</code>，重新读取不可变端点快照并重解析 DNS；单地址拨号有独立超时。</td><td>旧轮次的迟到成功不得发布为 current；不允许两个并发拨号同时写同一逻辑设备。</td></tr>
+                <tr><td>端点选择</td><td>有序端点 + 每端点冷却；瞬时错误切下一个端点；容量/最大会话拒绝按较长冷却处理。</td><td>日志同时记录主机名、解析 IP、endpointId、attemptGeneration，避免只看字符串误判设备。</td></tr>
+                <tr><td>退避</td><td>指数退避 + 抖动 + 上限；由 <code>TimeProvider</code> 驱动，不散落 <code>Task.Delay</code>。</td><td>认证错误不进入无限 hammering；测试可快进时间而不是真的等待。</td></tr>
+                <tr><td>建连后</td><td>依次执行应用握手、协议版本、认证、设备 ID / bootId / sessionNonce 校验、首个合法帧；成功后才置 Ready。</td><td>TCP 连上不等于设备可用；DNS 换到另一台同协议设备时必须拒绝或开新代。</td></tr>
+                <tr><td>拆链时</td><td>CAS 关闭旧 ctx → 取消 per-link CTS → shutdown/close socket → 丢弃半帧 → 排空 pending → 递增 epoch。</td><td>所有回调捕获 ctx，投递前检查 <code>ReferenceEquals(current, ctx)</code> 与 epoch；旧帧记 <code>StaleEpoch</code> 后丢弃。</td></tr>
+                <tr><td>停止时</td><td>先写 <code>RunState=Stopping</code>，取消生命周期 CTS，再关闭 socket；等待读泵、写泵、心跳和 accept 循环退出。</td><td>旧 socket 的断开回调晚到也不触发重连；<code>StopAsync</code> 幂等，超时后强制 abort 并记录。</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>重连时序</h3>
+          <div class="seq" aria-label="重连时序">
+            <div class="seq-row seq-head"><div>步</div><div>触发</div><div>动作</div><div>不变量</div></div>
+            <div class="seq-row"><div class="seq-no">1</div><div>心跳 N 次未回 / RST / Receive 0 / 握手超时</div><div>Supervisor 将 Epoch n 标记为 Closed，取消该连接 CTS，关闭 socket。</div><div class="invariant">不再有业务帧写入 Epoch n。</div></div>
+            <div class="seq-row"><div class="seq-no">2</div><div>拆链确认</div><div>写命令 pending 返回 <code>SentOutcomeUnknown</code>；读请求返回 <code>ConnectionLost</code>；丢弃半帧缓冲与心跳计数。</div><div class="invariant">不迁移旧 pending，不复用旧 decoder。</div></div>
+            <div class="seq-row"><div class="seq-no">3</div><div>退避结束</div><div>生成 attemptGeneration；重解析 DNS；选择端点；创建 Epoch n+1、新 Socket、新 CTS、新 SessionProtocol。</div><div class="invariant">只有最新 generation 可发布 current。</div></div>
+            <div class="seq-row"><div class="seq-no">4</div><div>TCP 建连成功</div><div>执行应用握手、身份校验、首合法帧；失败按错误分类进入 RetryWait / Faulted。</div><div class="invariant">握手未通过不得置 Ready。</div></div>
+            <div class="seq-row"><div class="seq-no">5</div><div>Ready</div><div>启动新心跳序列；接受业务命令；旧回调若携带 Epoch n 仍直接丢弃。</div><div class="invariant">旧 requestId 响应不会完成新 pending。</div></div>
+          </div>
+          <div class="callout">
+            <p><b>服务端没有“重连”。</b><code>ListenerSupervisor</code> 在 bind 失败时让配置事务失败；accept 循环遇到瞬时错误按退避重启并继续监听；每个 accepted socket 用自己的 SessionContext。设备主动断开后，服务端等待下一次 accept，不冒充客户端去拨号。</p>
+          </div>
+        </section>
+
+        <section id="robust">
+          <div class="section-head"><span class="section-no">07</span><h2>连接稳健性与命令语义</h2></div>
+          <h3>帧与收发管线</h3>
+          <div class="pipeline" aria-label="帧收发管线">
+            <div class="pipe-step"><b>业务请求</b>状态检查 / 超时 / CancellationToken</div>
+            <div class="pipe-step"><b>注册 pending</b><code>(Epoch, RequestId)</code></div>
+            <div class="pipe-step"><b>Encode</b>完整帧 + 长度上限</div>
+            <div class="pipe-step critical"><b>有界写队列</b>单写者，循环写完整个帧</div>
+            <div class="pipe-step"><b>Socket</b>Connect / Accept 共用 IFrameChannel</div>
+            <div class="pipe-step"><b>单读泵</b>ArrayPool 缓冲 + 半帧累积</div>
+            <div class="pipe-step critical"><b>Framer</b>每连接独立状态，最大帧 / 缓存超时</div>
+            <div class="pipe-step"><b>Correlator</b>匹配 / 重复 / 迟到 / 推送</div>
+            <div class="pipe-step"><b>投递</b>TCS 或 IDriverObserver</div>
+          </div>
+          <p class="figcaption">图 4 · 数据路径。写侧只串行化“完整帧写入”，不把等待响应的时间占住写锁；读侧只有一个消费者解析粘包/半包。</p>
+
+          <div class="grid-2">
+            <div class="card">
+              <h4>帧层契约</h4>
+              <ul>
+                <li><code>IFrameDecoder</code> 每条连接新建，内部保存未完成半帧；不得共享。</li>
+                <li><code>IFrameEncoder</code> 可无状态；输出必须是一个完整可写帧。</li>
+                <li>回调中的 <code>ReadOnlyMemory&lt;byte&gt;</code> 是借用视图，只在回调期间有效；需要跨调用保存必须复制。</li>
+                <li>超过 <code>MaxFrameSize</code>、半帧缓存超时、非法长度字段一律关闭当前链路并发事件，不尝试在污染字节流上继续猜边界。</li>
+                <li>内置三种工厂：固定长度、长度前缀、终止符；自定义 framer 由 <code>IDeviceKind</code> 提供。</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h4>请求关联</h4>
+              <ul>
+                <li>并发 Exchange 要求协议帧带 <code>requestId</code> 且响应原样回带。</li>
+                <li>默认 <code>MaxInFlight=1</code>；只有协议明确支持流水线且 ID 空间足够，才允许调大。</li>
+                <li>16 位事务 ID 需限制窗口、超时后置入 tombstone，保留 LateResponseWindow 后再复用。</li>
+                <li>重复、未知、旧 epoch 响应进入事件通道；绝不完成另一个等待者。</li>
+                <li>协议完全不能带 ID 时，强制单在途串行并禁止并发 Exchange。</li>
+              </ul>
+            </div>
+          </div>
+
+          <h3>命令结果必须可区分</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Disposition</th><th>含义</th><th>库是否自动重试</th></tr></thead>
+              <tbody>
+                <tr><td><code>NotSent</code></td><td>可确认整帧零字节未写入，例如校验失败、背压拒绝、未 Ready、取消发生在入队前。</td><td>否；调用方可决定是否重新发起。</td></tr>
+                <tr><td><code>SentOutcomeUnknown</code></td><td>整帧已交给内核但无匹配应用 ACK，或发生超时、拆链、设备重启、部分写出后异常。</td><td><b>否。禁止自动重放。</b></td></tr>
+                <tr><td><code>Rejected</code></td><td>收到同 epoch、同 requestId 的应用层否定应答。</td><td>否。</td></tr>
+                <tr><td><code>Executed</code></td><td>收到匹配的应用层执行 ACK；如业务要求，应再读回状态或版本。</td><td>否。</td></tr>
+                <tr><td><code>Canceled</code></td><td>调用方取消且可确认尚未完整写出；若已部分写出则升级为 Unknown。</td><td>否。</td></tr>
+                <tr><td><code>BackpressureRejected</code></td><td>写队列或在途表达到上限，命令没有进入发送路径。</td><td>否；返回明确错误码与当前队列深度。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout danger">
+            <p><b>关键安全边界。</b>SendAsync 成功只表示字节进入内核缓冲；TCP ACK、设备应用 ACK、设备实际执行是三个不同事实。写命令可能在 ACK 丢失前已执行，也可能根本没执行。重连、心跳超时和端点切换后自动重发同一帧，可能造成双次动作。库只报告 <code>SentOutcomeUnknown</code>；业务若需重试，应提供设备侧稳定的 commandId 幂等键或先状态读回。</p>
+          </div>
+
+          <h3>活性检查</h3>
+          <div class="grid-3">
+            <div class="card">
+              <h4>应用层心跳</h4>
+              <p class="small">Ping 携带 <code>epoch + 单调 seq</code>；Pong 必须匹配当前 epoch 与 seq。连续 N 次未回或静默超上限即 LinkDead。优先使用协议 Ping；没有 Ping 时用只读状态寄存器，绝不用写命令当心跳。</p>
+            </div>
+            <div class="card">
+              <h4>TCP keepalive</h4>
+              <p class="small">仅作内核最终回收和极长故障兜底。平台支持的 <code>TCP_KEEPIDLE/INTVL/CNT</code> 可配置；它只能证明对端内核可能还活着，不能证明 PLC 应用、协议会话或设备身份仍有效。</p>
+            </div>
+            <div class="card">
+              <h4>判死预算</h4>
+              <p class="small">建议初值：心跳 5 s、连续 3 次未回、静默上限 20 s、connect 3 s、handshake 3 s、退避 0.5 s → 30 s、抖动 20%。这些是待压测/现场校准的建议值，不是已验证事实。</p>
+            </div>
+          </div>
+
+          <h3>身份与设备重启</h3>
+          <p>Ready 前的应用握手必须核对协议版本、认证结果、设备 ID，以及可获得的 <code>bootId</code> 或 <code>sessionNonce</code>。若设备不暴露 bootId，则用握手 nonce + 状态/序列号读回；无法区分重启时，所有在途写只能标记 Unknown。DNS 指向新设备、bootId 变化或 sessionNonce 变化时，创建新的 epoch，清空缓存与订阅，重新读回设备状态，旧排队写不迁移。</p>
+
+          <h3>不可破坏的不变量</h3>
+          <ul class="checklist">
+            <li>同一个 socket 任意时刻只有一个写循环；完整帧写完才释放写锁。</li>
+            <li>同一个 socket 任意时刻只有一个读泵；decoder 不跨连接复用。</li>
+            <li>所有回调携带 <code>(DeviceId, Generation, ConnectionId, Epoch)</code>，旧代一律丢弃。</li>
+            <li>无界内存增长不存在：写队列、pending 表、读缓冲、帧长、监听会话数均有上限。</li>
+            <li>主动 Stop 产生的关闭不会触发重连；旧回调不会让已删除设备复活。</li>
+            <li>未识别的入站设备默认拒绝；认证失败不置 Ready。</li>
+            <li>观察者、codec、initializer 抛出的异常有明确记录并关闭当前连接；禁止空 catch 吞掉故障。</li>
+            <li>所有 fire-and-forget 任务都登记到所属 lease 的 TaskGroup，<code>StopAsync</code> 等待其退出。</li>
+          </ul>
+        </section>
+
+        <section id="api">
+          <div class="section-head"><span class="section-no">08</span><h2>公开 API 草案</h2></div>
+          <p class="muted small">以下签名是设计契约示意，尚未编译验证。正式编码前会以 AOT 分析器、单元测试和示例项目逐项收敛。</p>
+          <pre><code>public sealed class LiteDriver : IAsyncDisposable
+{
+    // 生命周期：显式、幂等、无静态全局 Current
+    public ValueTask StartAsync(CancellationToken ct = default);
+    public ValueTask StopAsync(CancellationToken ct = default);
+    public ValueTask DisposeAsync();
+
+    // 配置：全部经过同一 ValidateAndFreeze 与单写者事务
+    public ValueTask&lt;ApplyResult&gt; ApplyAsync(DriverConfig config, CancellationToken ct = default);
+    public ValueTask&lt;MutationResult&gt; AddDeviceAsync(DeviceDescriptor descriptor, CancellationToken ct = default);
+    public ValueTask&lt;MutationResult&gt; UpdateDeviceAsync(string deviceId, DeviceDescriptor descriptor, CancellationToken ct = default);
+    public ValueTask&lt;MutationResult&gt; RemoveDeviceAsync(string deviceId, CancellationToken ct = default);
+    public ValueTask&lt;MutationResult&gt; AddListenerAsync(ListenerDescriptor descriptor, CancellationToken ct = default);
+    public ValueTask&lt;MutationResult&gt; RemoveListenerAsync(string listenerId, CancellationToken ct = default);
+
+    public bool TryGetDevice(string deviceId, out DeviceHandle handle);
+    public ValueTask&lt;DriverSnapshot&gt; GetSnapshotAsync(CancellationToken ct = default);
+}
+
+public sealed class LiteDriverBuilder
+{
+    public LiteDriverBuilder RegisterKind(
+        string kindId,
+        Func&lt;KindRegistrationContext, IDeviceKind&gt; factory);
+
+    public LiteDriverBuilder UseTimeProvider(TimeProvider provider);
+    public LiteDriverBuilder UseObserver(IDriverObserver observer);
+    public LiteDriverBuilder UseTransportFactory(ITransportFactory factory);
+    public LiteDriverBuilder UseEndpointResolver(IEndpointResolver resolver);
+    public LiteDriverBuilder UseLimits(DriverLimits limits);
+    public LiteDriver Build();   // 冻结注册表，之后不可注册新 kind
+}
+
+public sealed class DeviceHandle
+{
+    public string DeviceId { get; }
+    public string KindId { get; }
+    public long Generation { get; }
+    public LinkState State { get; }
+    public ConnectionId? CurrentConnection { get; }
+
+    public ValueTask WaitUntilReadyAsync(TimeSpan timeout, CancellationToken ct = default);
+    public ValueTask&lt;CommandResult&gt; ExchangeAsync(
+        ReadOnlyMemory&lt;byte&gt; request,
+        RequestOptions options,
+        CancellationToken ct = default);
+    public ValueTask&lt;SendResult&gt; SendFrameAsync(
+        ReadOnlyMemory&lt;byte&gt; frame,
+        CancellationToken ct = default);
+    // 首版：单消费者有界 Channel；多播由应用层实现
+    public IAsyncEnumerable&lt;OwnedFrame&gt; ReadPushFramesAsync(CancellationToken ct = default);
+}
+
+public enum CommandDisposition
+{
+    NotSent,
+    SentOutcomeUnknown,
+    Rejected,
+    Executed,
+    Canceled,
+    BackpressureRejected
+}
+
+public sealed record CommandResult(
+    CommandDisposition Disposition,
+    IMemoryOwner&lt;byte&gt;? Response,   // 由调用方 Dispose 归还池化内存
+    string? ErrorCode,
+    ConnectionId ConnectionId,
+    long Epoch) : IDisposable;</code></pre>
+
+          <h3>配置 DTO 形态</h3>
+          <pre><code>public sealed class DriverConfig
+{
+    public DeviceDescriptor[] Devices { get; init; } = [];
+    public ListenerDescriptor[] Listeners { get; init; } = [];
+}
+
+public sealed class DeviceDescriptor
+{
+    public string DeviceId { get; init; } = "";
+    public string KindId { get; init; } = "";          // 注册表键，不是 CLR 类型名
+    public EndpointDescriptor[] Endpoints { get; init; } = [];
+    public RetryOptions? Retry { get; init; }
+    public HeartbeatOptions? Heartbeat { get; init; }
+    public JsonElement? KindSettings { get; init; }    // 固定键校验，非 object 多态
+}
+
+public sealed class ListenerDescriptor
+{
+    public string ListenerId { get; init; } = "";
+    public string KindId { get; init; } = "";
+    public string Host { get; init; } = "0.0.0.0";
+    public int Port { get; init; }
+    public int Backlog { get; init; } = 32;
+    public int MaxSessions { get; init; } = 64;
+    public JsonElement? KindSettings { get; init; }
+}
+
+public readonly record struct ApplyResult(
+    long Revision,
+    int Added,
+    int Updated,
+    int Removed,
+    IReadOnlyList&lt;ApplyIssue&gt; Issues);</code></pre>
+
+          <h3>典型使用路径</h3>
+          <pre><code>// 1. 启动时注册已编译的设备种类
+var driver = new LiteDriverBuilder()
+    .RegisterKind("length-prefix-v1", static _ =&gt; new LengthPrefixKind())
+    .UseTimeProvider(TimeProvider.System)
+    .UseObserver(consoleObserver)
+    .Build();
+
+await driver.StartAsync(ct);
+
+// 2. 运行期按事务增改删，不需要重新发布二进制
+await driver.ApplyAsync(new DriverConfig
+{
+    Devices = [
+        new DeviceDescriptor {
+            DeviceId = "press-01",
+            KindId = "length-prefix-v1",
+            Endpoints = [ new EndpointDescriptor { Host = "plc-a.local", Port = 502 } ]
+        }
+    ],
+    Listeners = [
+        new ListenerDescriptor {
+            ListenerId = "gateway-01",
+            KindId = "length-prefix-v1",
+            Port = 9000
+        }
+    ]
+}, ct);
+
+// 3. 等待 Ready 后发送明确语义的命令；不把 Unknown 当失败重试
+if (driver.TryGetDevice("press-01", out var handle))
+{
+    await handle.WaitUntilReadyAsync(TimeSpan.FromSeconds(10), ct);
+    using var result = await handle.ExchangeAsync(request, RequestOptions.SafeRead, ct);
+    if (result.Disposition == CommandDisposition.SentOutcomeUnknown)
+    {
+        // 业务对账；库不会自动重发
+    }
+}
+
+await driver.StopAsync(ct);</code></pre>
+          <div class="callout warn">
+            <p><b>版本边界。</b><code>AddDeviceAsync</code> / <code>UpdateDeviceAsync</code> / <code>RemoveDeviceAsync</code> 都是 <code>ApplyAsync</code> 的便捷包装，走同一套校验、事务和回滚。重复 Add 返回 <code>AlreadyExists</code>；更新不存在的设备返回 <code>NotFound</code>；过渡态返回 <code>Conflict</code>；不静默覆盖，不抛模糊异常。</p>
+          </div>
+        </section>
+
+        <section id="config">
+          <div class="section-head"><span class="section-no">09</span><h2>配置与事务化变更</h2></div>
+          <p>所有配置变更串行进入单写者队列。<code>ValidateAndFreeze()</code> 先生成不可变快照；<code>Generation</code> 标识逻辑设备的一代配置。回调必须携带 <code>(DeviceId, Generation)</code>，旧代回调在提交后全部失效。</p>
+          <div class="steps" aria-label="配置事务五阶段">
+            <div class="step"><span class="num">1</span><b>Validate</b><span>ID 唯一、kind 已注册、host/port、时间范围、帧长、队列、端口冲突、每 kind 扩展键。</span></div>
+            <div class="step"><span class="num">2</span><b>Freeze</b><span>克隆数组与 JsonElement；生成只读快照与每个设备的下一代 Generation。</span></div>
+            <div class="step"><span class="num">3</span><b>Stage</b><span>为新增 listener 预绑定端口；为变更项创建 lease；失败即释放本轮新建资源。</span></div>
+            <div class="step"><span class="num">4</span><b>Commit</b><span>一次性原子替换当前快照，发布新 revision；此后路由只看新 generation。</span></div>
+            <div class="step"><span class="num">5</span><b>Retire</b><span>取消旧 CTS、停 accept / 读写 / 心跳、排空 pending、等待 quiescence、释放端口与缓冲。</span></div>
+          </div>
+          <p class="figcaption">图 5 · Apply 事务。Stage 任一失败保持旧快照；提交后的清理有超时与强制 abort 兜底。</p>
+
+          <div class="grid-2">
+            <div class="card">
+              <h4>更新语义：默认 break-before-make</h4>
+              <p>同一 <code>DeviceId + KindId + bindingKey</code> 且仅心跳/退避等无副作用参数变化时，调用 <code>UpdateSettings</code> 原地更新不可变设置。端点、协议参数或监听端口变化，则停用旧 generation 并创建新 generation。</p>
+              <p>首版默认不允许同一逻辑设备同时存在两条活动物理连接，避免工业设备单会话限制和双写。若评审要求零中断，需要设备明确支持双会话，并另做 make-before-break 切换协议。</p>
+            </div>
+            <div class="card">
+              <h4>删除语义：等待 quiescence</h4>
+              <p><code>RemoveDeviceAsync</code> / <code>RemoveListenerAsync</code> 返回前，必须完成取消、关闭、pending 收束和任务退出；返回后才允许同 ID 再次 Add。端口删除后 smoke test 应验证不可连接。</p>
+              <p>监听端点的端口冲突在 Stage 暴露为明确的 <code>PortConflict</code>，回滚全部新建 listener，旧快照继续服务。</p>
+            </div>
+          </div>
+
+          <h3>配置输入边界</h3>
+          <p>核心公开的是 POCO 与 <code>ApplyAsync</code>；可选的 source-gen JSON 读取器只负责把固定契约解析成 POCO，然后调用同一个 <code>ValidateAndFreeze</code>。核心不监视文件、不访问数据库、不订阅配置中心；热更新来源属于宿主应用。Hosting 适配层若引入 <code>IConfiguration</code>，不得复制一套校验规则。</p>
+          <pre><code>{
+  "devices": [
+    {
+      "deviceId": "press-01",
+      "kindId": "length-prefix-v1",
+      "endpoints": [{ "host": "plc-a.local", "port": 502 }],
+      "retry": { "initialMs": 500, "maxMs": 30000, "jitter": 0.2 },
+      "heartbeat": { "intervalMs": 5000, "misses": 3, "silentMs": 20000 },
+      "kindSettings": { "lengthPrefixBytes": 2, "maxFrameSize": 4096, "unitId": 1 }
+    }
+  ],
+  "listeners": [
+    {
+      "listenerId": "gateway-01",
+      "kindId": "length-prefix-v1",
+      "host": "0.0.0.0",
+      "port": 9000,
+      "backlog": 32,
+      "maxSessions": 64
+    }
+  ]
+}</code></pre>
+          <p><code>kindSettings</code> 是 <code>JsonElement</code>，由该 kind 的已编译实现按固定键、类型和范围读取；它不是任意 <code>object</code> 图，也不是运行时类型发现入口。</p>
+        </section>
+
+        <section id="observability">
+          <div class="section-head"><span class="section-no">10</span><h2>可观测性与资源上限</h2></div>
+          <div class="grid-2">
+            <div class="card">
+              <h4>结构化事件</h4>
+              <p><code>IDriverObserver.OnEvent(in DriverEvent e)</code> 是核心唯一观测出口。事件字段固定：<code>EventId</code>、时间、<code>DeviceId</code>、<code>ListenerId</code>、<code>Generation</code>、<code>ConnectionId</code>、<code>Epoch</code>、<code>Direction</code>、<code>Kind</code>、错误码、端点、耗时。生产默认 <code>Noop</code>。</p>
+              <p>可选 Logging 包把事件映射到 <code>[LoggerMessage]</code>；不在 Core 依赖 <code>ILogger</code>，也不反射读取匿名对象。</p>
+            </div>
+            <div class="card">
+              <h4>必要指标</h4>
+              <p class="small">connect attempts / successes / failures、handshake failures、reconnects、ready duration、heartbeat timeouts、stale frames、unknown responses、pending timeouts、send unknown、backpressure drops、apply rollback、quiescence timeouts。计数器用 <code>Interlocked</code>，快照读取无锁。</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>资源</th><th>默认上限策略</th><th>超限行为</th></tr></thead>
+              <tbody>
+                <tr><td>写队列</td><td>每连接有界 Channel，建议初值 128；入队可带超时。</td><td><code>BackpressureRejected</code>；不阻塞无限业务线程，不落盘。</td></tr>
+                <tr><td>在途请求</td><td>默认 <code>MaxInFlight=1</code>；有 requestId 且协议允许时可调大。</td><td>拒绝新请求或按策略等待有界时间。</td></tr>
+                <tr><td>帧长 / 半帧缓存</td><td><code>MaxFrameSize</code> 建议初值 1 MiB；缓存超时建议 1 s，按协议校准。</td><td>关闭当前链路、丢弃缓存、发 <code>FrameLimitExceeded</code> 或 <code>FrameCacheTimeout</code>。</td></tr>
+                <tr><td>读缓冲</td><td><code>ArrayPool&lt;byte&gt;</code> 租用固定大小；每连接独立，finally 归还。</td><td>不随粘包长度无界扩张；异常路径也归还。</td></tr>
+                <tr><td>监听会话</td><td>每 listener <code>MaxSessions</code>；全局可加总上限。</td><td>显式拒绝帧或受控关闭，说明容量原因。</td></tr>
+                <tr><td>停机</td><td>全局 <code>StopTimeout</code>；先 graceful shutdown，再 abort。</td><td>超时强制关闭并记录未完成 lease，不无限等待。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p><b>故障注入接口：</b><code>IChaosPolicy</code> 只在测试构建注入，生产默认 Null，不能由普通配置静默开启。脚本按 seed + step 编号可重放：拨号拒绝、accept 即断、半帧、延迟/乱序响应、重复响应、写超时、握手失败、设备重启、DNS 指向不同身份。</p>
+        </section>
+
+        <section id="verification">
+          <div class="section-head"><span class="section-no">11</span><h2>AOT 与测试验收</h2></div>
+          <div class="callout warn">
+            <p><b>全部状态：未执行。</b>本节是设计验收矩阵，不是测试结果。实现阶段每个条目必须有可复现命令与失败路径证据；不能用“编译通过”代替原生二进制运行，也不能用 <code>RuntimeFeature.IsDynamicCodeSupported</code> 判断发布产物是否为真 AOT。</p>
+          </div>
+          <h3>项目与 CI 门禁</h3>
+          <pre><code>&lt;!-- LiteDriver.Core.csproj：库声明兼容性，不设 PublishAot --&gt;
+&lt;PropertyGroup&gt;
+  &lt;TargetFrameworks&gt;net8.0;net10.0&lt;/TargetFrameworks&gt;
+  &lt;IsAotCompatible&gt;true&lt;/IsAotCompatible&gt;
+  &lt;TreatWarningsAsErrors&gt;true&lt;/TreatWarningsAsErrors&gt;
+  &lt;JsonSerializerIsReflectionEnabledByDefault&gt;false&lt;/JsonSerializerIsReflectionEnabledByDefault&gt;
+  &lt;Nullable&gt;enable&lt;/Nullable&gt;
+  &lt;LangVersion&gt;latest&lt;/LangVersion&gt;
+&lt;/PropertyGroup&gt;
+&lt;!-- PackageReference：空 --&gt;
+
+&lt;!-- tests/AotSmoke/AotSmoke.csproj：应用验证真实发布 --&gt;
+&lt;PropertyGroup&gt;
+  &lt;PublishAot&gt;true&lt;/PublishAot&gt;
+  &lt;JsonSerializerIsReflectionEnabledByDefault&gt;false&lt;/JsonSerializerIsReflectionEnabledByDefault&gt;
+  &lt;OptimizationPreference&gt;Size&lt;/OptimizationPreference&gt;
+&lt;/PropertyGroup&gt;
+&lt;ItemGroup&gt;
+  &lt;TrimmerRootAssembly Include="LiteDriver.Core" /&gt;
+&lt;/ItemGroup&gt;</code></pre>
+          <p>CI 在对应原生 runner 上分别执行 <code>dotnet build -c Release</code>、<code>dotnet publish -c Release -f &lt;TFM&gt; -r &lt;RID&gt; -warnaserror</code>、原生二进制 smoke 与 <code>dotnet pack</code> 依赖检查。NativeAOT 产物按 RID 生成，Linux / Windows / macOS 不共用同一二进制；建议矩阵为 <code>linux-x64</code>、<code>linux-arm64</code>、<code>win-x64</code>、<code>osx-arm64</code>，实际范围待第 12 节确认。真 AOT 的机械判据是发布目录没有同名 <code>.runtimeconfig.json</code>，并实际运行原生可执行文件。</p>
+
+          <h3>验收矩阵</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>类别</th><th>用例</th><th>通过判据</th></tr></thead>
+              <tbody>
+                <tr><td>配置</td><td>未知 kind、重复 ID、非法端口、负超时、超长帧、非法扩展键、端口冲突、8 并发 Apply。</td><td>全部 fail-fast 或明确回滚；旧快照继续服务；无半新半旧状态。</td></tr>
+                <tr><td>动态生命周期</td><td>Add → Update → Remove → 同 ID 再 Add；旧代回调在 Remove 后到达；更新过程中 Stop。</td><td>Remove 返回后才允许复用 ID；旧回调丢弃；socket/CTS/任务零泄漏；端口关闭可验证。</td></tr>
+                <tr><td>重连</td><td>设备未上电冷启动、连接拒绝、DNS 失败、accept 即断、认证拒绝、最大会话拒绝、拔网线无 FIN/RST、设备应用僵死但内核存活、连续重启风暴。</td><td>StartAsync 不被无限重连阻塞；应用心跳在预算内判死；认证错误置 Faulted；主动 Stop 后零次重拨。</td></tr>
+                <tr><td>Epoch 隔离</td><td>重连后旧回调、旧半帧、旧 requestId 响应、旧心跳 Pong 到达。</td><td>全部丢弃并记事件；不得拼帧、不得完成新 pending、不得误置 Ready。</td></tr>
+                <tr><td>帧层</td><td>粘包、半包、多包一次到达、非法长度、超长帧、缓存超时、终止符出现在载荷中。</td><td>逐帧正确；超限关闭该链路；decoder 不共享，旧缓存不入新连接。</td></tr>
+                <tr><td>并发与关联</td><td>200 个并发请求、乱序响应、重复响应、迟到响应、16 位 ID 回绕、单在途降级、写超时/部分写出。</td><td>每个 Task 只收到自己的响应；超时 ID 有 tombstone；部分写出一律 Unknown 且拆链。</td></tr>
+                <tr><td>命令语义</td><td>设备执行写后丢 ACK、未收到写即重启、切换端点、业务取消、队列满。</td><td>两种丢 ACK 场景均 Unknown；重连/切换后零次自动重放；背压返回明确结果。</td></tr>
+                <tr><td>服务端</td><td>多设备接入、未知身份、握手超时、超过 MaxSessions、listener 端口更新、accept 瞬时异常。</td><td>未知默认拒绝；每会话独立 epoch/framer；端口冲突回滚；accept 循环可恢复且不产生重复会话。</td></tr>
+                <tr><td>AOT</td><td>每个 TFM × RID 的 Release publish、零 IL 警告、原生二进制 loopback 收发、所有注册 kind 分支、反射负例、pack 依赖组。</td><td>原生二进制运行通过；反射/动态加载负例按预期失败；nuspec 两 TFM 依赖组为空。</td></tr>
+                <tr><td>停机</td><td>在途命令、读泵挂起、写队列积压、心跳定时器、accept 循环、观察者抛异常时 Stop。</td><td>全部 pending 有终态；任务退出；资源归还；异常有事件；Stop 幂等且超时可强制 abort。</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>实施顺序</h3>
+          <ol>
+            <li><b>M0 设计批准：</b>确认第 12 节决策、协议是否支持 requestId、目标 RID 与首版范围。</li>
+            <li><b>M1 内核骨架：</b>POCO 校验、冻结快照、Builder、生命周期、TimeProvider、Observer、FakeTransport 单测。</li>
+            <li><b>M2 出站链路：</b>Socket connector、framer、单读/单写泵、心跳、Epoch、requestId、重连与命令 Disposition。</li>
+            <li><b>M3 入站与事务：</b>Listener、session binder、单写者 Apply、回滚、quiescence、chaos 集成测试。</li>
+            <li><b>M4 可选适配：</b>Hosting、Logging、source-gen JSON 读取器、示例与 API 手册。</li>
+            <li><b>M5 发布门禁：</b>双 TFM、各 RID 的 AOT publish、原生 smoke、失败路径回归、NuGet 元数据检查。</li>
+          </ol>
+          <p class="small muted">此处只列依赖关系与完成项，不排日期；每阶段以对应验收项全部通过为完成条件。</p>
+        </section>
+
+        <section id="decisions">
+          <div class="section-head"><span class="section-no">12</span><h2>请确认的设计决策</h2></div>
+          <p>建议按 Q1–Q9 编号回复“同意默认 / 改为……”。这些选择会直接改变 API、测试矩阵和发布工作量。</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>编号</th><th>默认选择</th><th>为何需要你确认</th><th>若改变的影响</th></tr></thead>
+              <tbody>
+                <tr><td>Q1</td><td>项目暂名 <code>LiteDriver</code>，核心仅 <code>net8.0;net10.0</code> 双目标。</td><td>包名、命名空间、最低 TFM 属于长期兼容契约；尚未检查占用。</td><td>若需 netstandard2.0 或 .NET Framework，AOT 分析器与 API 形态需重新设计。</td></tr>
+                <tr><td>Q2</td><td>首版仅 TCP 明文；TLS、串口、UDP、WebSocket 和具体 PLC 协议全部在核心之外。</td><td>工业设备协议与链路类型决定 <code>ITransportFactory</code> 和 <code>IDeviceKind</code> 的边界。</td><td>若首版必须支持 TLS / 串口，需要增加传输装饰层及对应 AOT 与故障注入测试。</td></tr>
+                <tr><td>Q3</td><td>动态创建采用启动期冻结的显式 <code>kindId → factory</code> 注册表；新增协议需重新编译发布。</td><td>这与“运行时装插件”是完全不同的产品能力。</td><td>若必须运行时加载新驱动，NativeAOT 目标需放弃或改为独立进程外插件。</td></tr>
+                <tr><td>Q4</td><td>配置更新默认 break-before-make；同一逻辑设备不并发持有两条活动连接。</td><td>零中断更新要求设备支持双会话，且需明确切换点。</td><td>若要求零中断，需另设计 make-before-break、双会话身份校验与切换失败回滚。</td></tr>
+                <tr><td>Q5</td><td>并发请求要求协议带 requestId；无 ID 时强制单在途串行。</td><td>需要确认实际设备/网关帧格式能否添加或已有事务 ID。</td><td>若不能携带 ID，吞吐受限；若可以，需确定 ID 位宽、回绕与重复抑制策略。</td></tr>
+                <tr><td>Q6</td><td>写命令断线/超时后绝不自动重放；只返回 <code>SentOutcomeUnknown</code>。</td><td>业务侧是否有幂等 commandId、状态读回或人工对账流程。</td><td>若要求库内自动重试，必须定义设备侧幂等键与对账协议，否则有双次动作风险。</td></tr>
+                <tr><td>Q7</td><td>入站设备默认拒绝未知身份；每个监听端口绑定一个 kindId。</td><td>需要确认现场是否有一个端口混接多种设备、以及设备身份来自哪里。</td><td>若混接，需要协议协商器与多 kind 路由；会增加握手状态机和测试组合。</td></tr>
+                <tr><td>Q8</td><td>核心只接受 POCO；可选 source-gen JSON 读取器；不内置文件监听/配置中心。</td><td>配置来源可能是文件、数据库、MQTT、上位机 API 或 Web 配置台。</td><td>若需要核心直接热加载，需确定源、鉴权、失败与回滚语义，但不应引入反射绑定。</td></tr>
+                <tr><td>Q9</td><td>AOT 矩阵建议 <code>linux-x64/arm64 · win-x64 · osx-arm64</code>，在对应原生 runner 发布。</td><td>实际部署平台、CI 预算和最低 glibc / Windows / macOS 版本未确认。</td><td>减少平台可缩短 CI；增加平台需补原生工具链、符号文件与现场 smoke。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="decision"><b>建议的审阅方式：</b>先确认 Q2、Q3、Q5、Q6 四项硬边界，再讨论 API 命名与默认值。若现场已有一种代表设备的报文手册，建议下一轮以该报文做一次接口走查，特别是 requestId、应用心跳、身份字段和写 ACK。</div>
+          <div class="callout danger">
+            <p><b>不要以“设计稿已出”当作实现许可。</b>本轮交付只包含设计与 HTML 渲染验证；在 Q1–Q9 收敛前，不创建项目结构、不写库代码、不发布包。</p>
+          </div>
+        </section>
+
+        <section id="sources">
+          <div class="section-head"><span class="section-no">13</span><h2>参考资料</h2></div>
+          <p class="small muted">链接为 2026-11-10 检索的公开资料；外部网页内容仅作设计参考，不视为对本机或现场设备的实测结论。</p>
+          <ol class="source-list">
+            <li><a href="https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/">Microsoft Learn · Native AOT deployment</a>：AOT 限制、<code>IsAotCompatible</code>、TFM 与 RID。</li>
+            <li><a href="https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/source-generation">Microsoft Learn · How to use source generation in System.Text.Json</a>：源生成上下文、关闭反射默认、泛型枚举转换器。</li>
+            <li><a href="https://learn.microsoft.com/en-us/dotnet/api/system.net.sockets.socket?view=net-10.0">Microsoft Learn · Socket Class (.NET 10)</a>：异步/取消、循环发送、<code>Connected</code> 语义。</li>
+            <li><a href="https://learn.microsoft.com/en-us/dotnet/api/system.net.sockets.socket.connected?view=net-10.0">Microsoft Learn · Socket.Connected Property</a>：只反映最近一次 Send/Receive，非线程安全。</li>
+            <li><a href="https://www.touchsocket.net/docs/current/">TouchSocket 4.3 文档首页</a>与<a href="https://www.touchsocket.net/docs/current/adapterdescription">数据处理适配器</a>：粘包/半包、每终端工厂、最大包与缓存超时。</li>
+            <li><a href="https://www.touchsocket.net/docs/current/tcpcommonplugins">TouchSocket 4.3 · 常用插件</a>：健康活性检查与 OS 定时器延迟说明。</li>
+            <li><a href="https://www.touchsocket.net/docs/current/waitingclient">TouchSocket 4.3 · 同步请求</a>：过期响应、筛选器与 requestId 建议。</li>
+            <li><a href="https://www.touchsocket.net/docs/3.1/reconnection">TouchSocket 3.1 · 断线重连</a>：页面明示为不再积极维护的旧版文档；仅用于提取“Online 不等于活性、拔网线依赖保活、主动断开与被动断开有别”的教训。</li>
+            <li><a href="https://docs.supersocket.net/v2-0/en-US/Some-Basic-Concepts-In-SuperSocket">SuperSocket 2.0 · Some Basic Concepts</a>：Package Type 与 PipelineFilter 分层。</li>
+            <li><a href="https://github.com/dathlin/HslCommunication">HslCommunication GitHub README</a>：<code>OperateResult&lt;T&gt;</code>、长连接与商业授权说明。</li>
+          </ol>
+          <div class="footer">
+            <p><b>文件性质：</b>单文件 HTML，所有 CSS、SVG 图形与文字内嵌，断网可打开；外链仅在点击参考资料时访问。</p>
+            <p><b>渲染验证：</b><span class="status-dot" style="background:#0d8b7d"></span>2026-11-10 用本机 Microsoft Edge headless（CDP）实测：1440×1200 与 390×844 两档页面均无横向溢出（<code>scrollWidth</code> 等于视口宽）、13 个章节与 13 个目录锚点全部命中、3 张内嵌 SVG 与 8 张表格正常渲染、0 个 script 标签与 0 个外部资源引用；窄屏下表宽超出部分由 <code>.table-wrap</code> 容器横向滚动承载，页面本身不溢出。</p>
+            <p><b>未验证项：</b>第三方库 NativeAOT 兼容性、真实设备协议、C# API 编译、AOT 发布、故障注入与性能数据。本文不把这些写成既成事实。</p>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

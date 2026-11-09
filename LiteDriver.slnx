@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LiteDriver/LiteDriver.csproj" />
+    <Project Path="src/LiteDriver.Hosting/LiteDriver.Hosting.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/LiteDriver.SampleHost/LiteDriver.SampleHost.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LiteDriver.Tests/LiteDriver.Tests.csproj" />
+    <Project Path="tests/LiteDriver.AotSmoke/LiteDriver.AotSmoke.csproj" />
+  </Folder>
+</Solution>

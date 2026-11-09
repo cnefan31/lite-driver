@@ -1,0 +1,120 @@
+name: Release to NuGet
+
+# 触发方式：推送形如 v1.0.0 的 tag 时自动发布
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  release:
+    name: 打包并发布
+    runs-on: ubuntu-latest
+
+    # 必须与 nuget.org 受信任发布策略里的 Environment 完全一致（本例为 release）。
+    # 若两处不一致，OIDC 令牌不含对应声明，令牌交换会失败并报 401。
+    environment:
+      name: release
+      url: https://www.nuget.org/packages/LiteDriver
+
+    permissions:
+      contents: write     # 创建 GitHub Release 需要
+      id-token: write     # 请求 GitHub OIDC 令牌 —— 受信任发布必需
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 从 tag 推导版本号
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$TAG' 不是合法语义化版本（应形如 v1.0.0 或 v1.0.0-beta.1）"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "解析出版本号：$VERSION"
+
+      - name: 还原
+        run: dotnet restore LiteDriver.slnx
+
+      - name: 构建（Release，警告视为错误）
+        run: dotnet build LiteDriver.slnx -c Release --no-restore /warnaserror /p:Version=${{ steps.ver.outputs.version }}
+
+      - name: 回归测试
+        run: dotnet test tests/LiteDriver.Tests/LiteDriver.Tests.csproj -c Release --no-build
+
+      - name: 运行示例做端到端回归
+        run: |
+          set -e
+          dotnet samples/LiteDriver.SampleHost/bin/Release/net10.0/LiteDriver.SampleHost.dll | tee sample.log
+          grep -q "交换结果 Executed" sample.log
+          grep -q "重连成功" sample.log
+
+      - name: 打包
+        run: |
+          dotnet pack src/LiteDriver/LiteDriver.csproj -c Release --no-build -o artifacts /p:Version=${{ steps.ver.outputs.version }}
+          dotnet pack src/LiteDriver.Hosting/LiteDriver.Hosting.csproj -c Release --no-build -o artifacts /p:Version=${{ steps.ver.outputs.version }}
+
+      - name: 校验包内容
+        run: |
+          set -e
+          ls -la artifacts/
+          cd artifacts
+          rm -rf verify && mkdir verify && cd verify
+          VERSION="${{ steps.ver.outputs.version }}"
+          unzip -o -q "../LiteDriver.${VERSION}.nupkg"
+          echo "=== LiteDriver.nuspec 依赖检查 ==="
+          if grep -q '<dependency ' LiteDriver.nuspec; then
+            echo "::error::核心包出现依赖，违反零依赖承诺"
+            exit 1
+          fi
+          echo "核心包零依赖，符合承诺"
+          test -f README.md || { echo "::error::包内缺 README.md"; exit 1; }
+          test -f lib/net8.0/LiteDriver.dll || { echo "::error::缺 net8.0 目标"; exit 1; }
+          test -f lib/net10.0/LiteDriver.dll || { echo "::error::缺 net10.0 目标"; exit 1; }
+          echo "包结构校验通过"
+
+      - name: NuGet 登录（OIDC 受信任发布）
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: 检查获取到 API Key
+        run: |
+          if [ -z "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" ]; then
+            echo "::error::未能通过 OIDC 换取 NuGet API Key，检查受信任发布策略与 environment"
+            exit 1
+          fi
+
+      - name: 推送到 NuGet.org
+        run: |
+          set -e
+          dotnet nuget push "artifacts/LiteDriver.${{ steps.ver.outputs.version }}.nupkg" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json --skip-duplicate
+          dotnet nuget push "artifacts/LiteDriver.Hosting.${{ steps.ver.outputs.version }}.nupkg" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
+          generate_release_notes: true
