@@ -1,14 +1,31 @@
-# LiteDriver 架构审阅稿
+# 文档索引
 
-本目录存放设计审阅材料，当前不包含实现代码。
+| 文档 | 内容 |
+| --- | --- |
+| [API.md](./API.md) | 公开 API 逐个说明：构建、生命周期、设备操作、协议扩展、分包器、观测、配置类型 |
+| [CONFIGURATION.md](./CONFIGURATION.md) | 全部参数默认值、边界、调优要点与三档典型配置 |
+| [PUBLISHING.md](./PUBLISHING.md) | NuGet 受信任发布的一次性准备与发版流程 |
+| [lite-driver-architecture-review.html](./lite-driver-architecture-review.html) | 架构设计与审阅稿（单文件 HTML，含三张架构图，断网可开） |
 
-## 文档
+## 代码结构
 
-- [lite-driver-architecture-review.html](./lite-driver-architecture-review.html)：单文件 HTML 审阅稿。包含分层架构图、出站/入站设备拓扑图、生命周期与重连状态机、帧收发管线、配置事务流程、AOT 动态创建边界、公开 API 草案、测试验收矩阵与待确认决策。
+```
+src/LiteDriver/                核心库，零 NuGet 依赖
+  Configuration/               配置 DTO、源生成 JSON、校验与冻结
+  Protocol/                    帧编解码、设备种类与会话协议接口
+  Sessions/                    连接上下文、读写泵、心跳、在途请求
+  Transport/                   拨号器、DNS 解析、出站/入站监督器
+  Observability/               事件与观察者
+src/LiteDriver.Hosting/        可选：通用主机与 DI 集成
+samples/LiteDriver.SampleHost/ 通用主机示例 + 本地模拟设备
+tests/LiteDriver.Tests/        单元与环回集成测试
+tests/LiteDriver.AotSmoke/     NativeAOT 原生二进制 smoke
+```
 
-## 边界
+## 关键设计约束
 
-- 文档状态：待审阅，尚未实现。
-- `LiteDriver` 是随工作区名称拟定的暂定项目名，尚未检查 NuGet 包名占用。
-- 所有 CSS、SVG 图形与正文内嵌在 HTML 中，断网可打开；参考资料为外链，点击时才访问。
-- 工作区本机 `.NET SDK` 为 `10.0.201`，但尚未创建 C# 项目，也未执行 AOT 发布或工业设备连接测试。
+1. 核心不引用任何 NuGet 包（CI 会解包校验依赖组为空）
+2. 设备种类只能通过启动期冻结的显式工厂注册，禁止反射与运行时代码生成
+3. 每条物理连接拥有独立 decoder、缓冲、写锁、心跳计数与在途表
+4. 写命令断链后只返回 `SentOutcomeUnknown`，绝不自动重放
+5. `Ready` 必须晚于 TCP 建连、应用握手与身份确认
