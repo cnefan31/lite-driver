@@ -1,10 +1,22 @@
 name: Release to NuGet
 
-# 触发方式：推送形如 v1.0.0 的 tag 时自动发布
+# 触发方式：推送形如 v1.0.0 的 tag 时自动发布；
+# 也可手动触发做 dry-run，走完全部步骤但跳过 NuGet 推送与 Release 创建，
+# 用于在真正发版前验证整条流水线。
 on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只演练，不推送 NuGet 也不创建 Release'
+        type: boolean
+        default: true
+      version:
+        description: '演练用版本号（dry-run 时必填，形如 1.0.0）'
+        type: string
+        required: false
 
 env:
   DOTNET_NOLOGO: true
@@ -36,11 +48,19 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: 从 tag 推导版本号
+      - name: 推导版本号
         id: ver
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            if [ -z "$VERSION" ]; then
+              echo "::error::手动触发必须填 version（形如 1.0.0）"
+              exit 1
+            fi
+          else
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          fi
           if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "::error::tag '$TAG' 不是合法语义化版本（应形如 v1.0.0 或 v1.0.0-beta.1）"
             exit 1
@@ -88,13 +108,20 @@ jobs:
           test -f lib/net10.0/LiteDriver.dll || { echo "::error::缺 net10.0 目标"; exit 1; }
           echo "包结构校验通过"
 
+      - name: 演练模式提示
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          echo "::notice::dry-run 模式：已完成构建、测试、打包与包内容校验；跳过 OIDC 与 NuGet 推送。"
+
       - name: NuGet 登录（OIDC 受信任发布）
         id: nuget-login
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         uses: NuGet/login@v1
         with:
           user: ${{ secrets.NUGET_USER }}
 
       - name: 检查获取到 API Key
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         run: |
           if [ -z "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" ]; then
             echo "::error::未能通过 OIDC 换取 NuGet API Key，检查受信任发布策略与 environment"
@@ -102,6 +129,7 @@ jobs:
           fi
 
       - name: 推送到 NuGet.org
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         run: |
           set -e
           dotnet nuget push "artifacts/LiteDriver.${{ steps.ver.outputs.version }}.nupkg" \
@@ -112,6 +140,7 @@ jobs:
             --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       - name: 创建 GitHub Release
+        if: ${{ github.event_name == 'push' }}
         uses: softprops/action-gh-release@v2
         with:
           files: |
