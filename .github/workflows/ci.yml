@@ -41,7 +41,7 @@ jobs:
         run: dotnet restore LiteDriver.slnx
 
       - name: 构建（Release，警告视为错误）
-        run: dotnet build LiteDriver.slnx -c Release --no-restore /warnaserror
+        run: dotnet build LiteDriver.slnx -c Release --no-restore -warnaserror
 
       - name: 单元与环回集成测试
         run: dotnet test tests/LiteDriver.Tests/LiteDriver.Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
@@ -101,7 +101,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
       - name: 发布 net10.0 原生二进制
-        run: dotnet publish tests/LiteDriver.AotSmoke/LiteDriver.AotSmoke.csproj -c Release -f net10.0 -r ${{ matrix.rid }} -o publish/aot10 /warnaserror
+        run: dotnet publish tests/LiteDriver.AotSmoke/LiteDriver.AotSmoke.csproj -c Release -f net10.0 -r ${{ matrix.rid }} -o publish/aot10 -warnaserror
 
       - name: 断言确为真 AOT（无 runtimeconfig.json）
         shell: bash
@@ -127,7 +127,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          dotnet publish tests/LiteDriver.AotSmoke/LiteDriver.AotSmoke.csproj -c Release -f net8.0 -r ${{ matrix.rid }} -o publish/aot8 /warnaserror
+          dotnet publish tests/LiteDriver.AotSmoke/LiteDriver.AotSmoke.csproj -c Release -f net8.0 -r ${{ matrix.rid }} -o publish/aot8 -warnaserror
           if [ -f publish/aot8/LiteDriver.AotSmoke.runtimeconfig.json ]; then
             echo "::error::net8.0 产物含 runtimeconfig.json，不是真 AOT"
             exit 1
