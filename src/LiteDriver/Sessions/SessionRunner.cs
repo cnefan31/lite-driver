@@ -257,7 +257,9 @@ internal sealed class SessionRunner
             return true;
         }
 
-        if (_ctx.Protocol.Response.IsResponse(frame))
+        // 响应判定只在出站方向有意义：入站会话没有「我们发出的请求」，
+        // 一切帧都应作为上报数据交付给应用，不能走响应策略，否则会误报 UnknownFrame。
+        if (_ctx.Direction == ConnectionDirection.Outbound && _ctx.Protocol.Response.IsResponse(frame))
         {
             if (_ctx.InFlightReader.TryRead(out var pending))
             {

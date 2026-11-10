@@ -168,6 +168,22 @@ public sealed class MyProtocol : ISessionProtocol
 ## 示例
 
 - [samples/LiteDriver.SampleHost](./samples/LiteDriver.SampleHost) —— 通用主机 + 本地模拟设备，演示建连、交换、断链重连、运行期增删改与优雅停机
+- [samples/LiteDriver.TestBench](./samples/LiteDriver.TestBench) —— **可视化测试台**：同屏运行客户端驱动与服务端驱动，两者互连做连通测试，可切换协议快速验证自定义帧格式
+
+### 可视化测试台
+
+```bash
+dotnet run --project samples/LiteDriver.TestBench -- --port 8099
+# 打开 http://127.0.0.1:8099/
+```
+
+页面同时配置一个**客户端驱动**（主动拨号）与一个**服务端驱动**（监听接入），点一次按钮就能：
+
+- 验证出站与入站两种模式是否都工作
+- 逐项查看 5 条连通断言（含"裸 socket 直连服务端"这种绕开客户端驱动的独立验证）
+- 切换内置协议或新增自己的协议，立即复验帧格式
+
+内置四种协议：长度前缀、终止符（含握手与心跳）、固定长度、Modbus 风格（带事务 ID）。新增自定义协议只需在 `Protocols/ProtocolCatalog.cs` 加一项，前端下拉自动出现。
 
 ## 目标与非目标
 

@@ -169,6 +169,47 @@ jobs:
             grep -q "ALL CHECKS PASSED" "host-${TFM}.log"
           done
 
+  test-bench:
+    name: 可视化测试台双驱动连通验证
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 构建测试台
+        run: dotnet build samples/LiteDriver.TestBench/LiteDriver.TestBench.csproj -c Release
+
+      - name: 启动测试台
+        run: |
+          dotnet samples/LiteDriver.TestBench/bin/Release/net10.0/LiteDriver.TestBench.dll --port 8099 > bench.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -sf -o /dev/null http://127.0.0.1:8099/api/protocols; then break; fi
+            sleep 0.5
+          done
+          curl -sf -o /dev/null http://127.0.0.1:8099/api/protocols || { echo "::error::测试台未启动"; cat bench.log; exit 1; }
+          echo "测试台已就绪"
+
+      - name: 逐协议验证双驱动连通
+        run: python3 samples/LiteDriver.TestBench/verify-bench.py
+
+      - name: 页面可访问性断言
+        run: |
+          set -e
+          curl -sf http://127.0.0.1:8099/ -o page.html
+          grep -q "LiteDriver 测试台" page.html || { echo "::error::页面标题缺失"; exit 1; }
+          grep -q "客户端驱动" page.html
+          grep -q "服务端驱动" page.html
+          echo "页面结构校验通过（$(wc -c < page.html) 字节）"
+
+      - name: 失败时输出测试台日志
+        if: failure()
+        run: cat bench.log || true
+
   sample-host:
     name: 通用主机示例实跑
     runs-on: ubuntu-latest

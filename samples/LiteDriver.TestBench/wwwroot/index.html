@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiteDriver 测试台</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --panel:#fff; --ink:#121a24; --muted:#5c6b7d; --line:#dbe3ec;
+    --accent:#0a66c2; --accent-bg:#eaf3fc; --ok:#0d8b6a; --ok-bg:#e8f7f1;
+    --bad:#b3261e; --bad-bg:#fdecea; --warn:#8a5a00; --warn-bg:#fff6e5;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 var(--sans)}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 20px 60px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  h1{font-size:24px;margin:0;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:13px}
+  .pills{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 20px}
+  .pill{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:4px 12px;font-size:12px;color:var(--muted)}
+  .pill b{color:var(--ink);font-weight:600}
+  .pill.on{border-color:#9dcfbd;background:var(--ok-bg);color:var(--ok)}
+  .pill.off{border-color:#e6b3ae;background:var(--bad-bg);color:var(--bad)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card h2{font-size:15px;margin:0 0 4px;display:flex;align-items:center;gap:8px}
+  .card .hint{color:var(--muted);font-size:12px;margin:0 0 14px}
+  .role{font:600 11px var(--mono);padding:2px 7px;border-radius:5px;background:var(--accent-bg);color:var(--accent)}
+  .role.srv{background:#eef7ee;color:#2f6b3a}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+  select,input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;font:13px var(--sans);color:var(--ink)}
+  select:focus,input:focus{outline:2px solid var(--accent-bg);border-color:var(--accent)}
+  .desc{font-size:12px;color:var(--muted);margin-top:6px;min-height:32px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  button{padding:9px 18px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--ink);font:600 13px var(--sans);cursor:pointer}
+  button:hover{border-color:#b9c6d6}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#0b5aa8}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .full{grid-column:1/-1}
+  .checks{list-style:none;padding:0;margin:10px 0 0}
+  .checks li{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .checks li:last-child{border-bottom:0}
+  .mark{flex:0 0 18px;font-weight:700;text-align:center}
+  .mark.p{color:var(--ok)} .mark.f{color:var(--bad)}
+  .detail{color:var(--muted);font:12px var(--mono);word-break:break-all}
+  .log{background:#0e1726;color:#dbe7f5;border-radius:10px;padding:12px 14px;font:12px/1.6 var(--mono);max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+  .log .ok{color:#7ee2b8} .log .bad{color:#ff9d95} .log .ts{color:#7f93ab}
+  .banner{padding:10px 14px;border-radius:9px;font-size:13px;margin:14px 0;display:none}
+  .banner.show{display:block}
+  .banner.ok{background:var(--ok-bg);color:var(--ok);border:1px solid #a8ddd0}
+  .banner.bad{background:var(--bad-bg);color:var(--bad);border:1px solid #eeb9b4}
+  .banner.info{background:var(--accent-bg);color:var(--accent);border:1px solid #b6d6f2}
+  @media(max-width:860px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LiteDriver 测试台</h1>
+    <span class="sub">同时配置客户端驱动与服务端驱动，验证两种模式连通性，并快速切换自定义协议</span>
+  </header>
+
+  <div class="pills">
+    <span class="pill" id="pill-server">服务端 <b id="srv-state">未启动</b></span>
+    <span class="pill" id="pill-client">客户端 <b id="cli-state">未启动</b></span>
+    <span class="pill">端口 <b id="srv-port">—</b></span>
+    <span class="pill">入站会话 <b id="srv-sessions">0</b></span>
+    <span class="pill">epoch <b id="cli-epoch">0</b></span>
+  </div>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="grid">
+    <div class="card">
+      <h2><span class="role">客户端驱动</span> 主动拨号</h2>
+      <p class="hint">出站模式：由本端主动连接服务端，支持断线重连与单在途命令。</p>
+      <label for="cli-proto">协议</label>
+      <select id="cli-proto"></select>
+      <div class="desc" id="cli-desc"></div>
+    </div>
+
+    <div class="card">
+      <h2><span class="role srv">服务端驱动</span> 监听接入</h2>
+      <p class="hint">入站模式：监听端口、接受连接、为每条连接建立独立会话。</p>
+      <label for="srv-proto">协议</label>
+      <select id="srv-proto"></select>
+      <div class="desc" id="srv-desc"></div>
+      <label for="port">监听端口（0 表示自动分配）</label>
+      <input id="port" type="number" value="0" min="0" max="65535">
+    </div>
+
+    <div class="card full">
+      <div class="row" style="margin-top:0">
+        <button class="primary" id="btn-start">启动双驱动</button>
+        <button id="btn-stop">停止</button>
+        <button id="btn-conn">运行连通测试</button>
+      </div>
+      <label for="msg">测试消息</label>
+      <input id="msg" value="hello-from-bench">
+    </div>
+
+    <div class="card full">
+      <h2>连通测试结果</h2>
+      <p class="hint">依次验证：客户端 Ready、服务端出现入站会话、交换成功、服务端应答符合协议、裸 socket 直连服务端可用。</p>
+      <ul class="checks" id="checks"><li><span class="mark">·</span><span class="detail">尚未运行</span></li></ul>
+    </div>
+
+    <div class="card full">
+      <h2>事件流水</h2>
+      <p class="hint">来自两个驱动的真实事件（最近 200 条）。</p>
+      <div class="log" id="log">（暂无事件）</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let protocols = [];
+
+function banner(text, kind){
+  const b = $('banner');
+  b.textContent = text;
+  b.className = 'banner show ' + kind;
+  if(kind === 'ok') setTimeout(()=>{ b.className='banner'; }, 4000);
+}
+
+async function api(path, body){
+  const res = await fetch(path, body === undefined ? {} : {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  const json = await res.json();
+  if(!json.ok) throw new Error(json.error || '请求失败');
+  return json.data;
+}
+
+function fillSelect(sel, desc){
+  sel.innerHTML = protocols.map(p =>
+    `<option value="${p.id}">${p.displayName}</option>`).join('');
+  const update = () => {
+    const p = protocols.find(x => x.id === sel.value);
+    if(p){
+      const extra = [];
+      if(p.supportsHandshake) extra.push('含握手');
+      if(p.supportsHeartbeat) extra.push('含心跳');
+      desc.textContent = p.description + (extra.length ? ' · ' + extra.join(' · ') : '');
+    }
+  };
+  sel.addEventListener('change', () => { update(); refreshStatus(); });
+  update();
+}
+
+function renderStatus(s){
+  $('srv-state').textContent = s.serverRunning ? '运行中' : '未启动';
+  $('cli-state').textContent = s.clientRunning ? s.clientState : '未启动';
+  $('srv-port').textContent = s.serverPort || '—';
+  $('srv-sessions').textContent = s.inboundSessions;
+  $('cli-epoch').textContent = s.clientEpoch;
+  $('pill-server').className = 'pill ' + (s.serverRunning ? 'on' : 'off');
+  $('pill-client').className = 'pill ' + (s.clientRunning && s.clientState === 'Ready' ? 'on' : 'off');
+  renderLog(s.recentEvents || []);
+}
+
+function renderLog(events){
+  if(!events.length){ $('log').textContent = '（暂无事件）'; return; }
+  const lines = events.slice(-120).map(e => {
+    const good = ['Ready','SessionAccepted','ConfigApplied','Connected'].includes(e.kind);
+    const bad = ['Faulted','HandshakeFailed','HeartbeatTimeout','ProtocolFault'].includes(e.kind);
+    const cls = good ? 'ok' : bad ? 'bad' : '';
+    const target = e.deviceId || e.listenerId || '-';
+    return `<span class="ts">e${e.epoch}</span> <span class="${cls}">${e.kind}</span> ${e.direction} ${target}`
+      + (e.detail ? ' · ' + e.detail : '') + (e.value ? ' · ' + e.value : '');
+  });
+  $('log').innerHTML = lines.join('\n');
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function renderChecks(report){
+  const ul = $('checks');
+  ul.innerHTML = report.steps.map(s =>
+    `<li><span class="mark ${s.passed?'p':'f'}">${s.passed?'✓':'✗'}</span>
+      <span>${s.name}<div class="detail">${s.detail || ''}</div></span></li>`).join('');
+}
+
+async function refreshStatus(){
+  try{
+    const s = await api('/api/status');
+    renderStatus(s);
+    return s;
+  }catch(e){ /* 静默，避免轮询刷屏 */ }
+}
+
+$('btn-start').onclick = async () => {
+  const port = parseInt($('port').value || '0', 10);
+  banner('正在启动双驱动…', 'info');
+  try{
+    const s = await api('/api/start', {
+      clientProtocolId: $('cli-proto').value,
+      serverProtocolId: $('srv-proto').value,
+      port
+    });
+    renderStatus(s);
+    banner(`已启动：服务端端口 ${s.serverPort}，客户端状态 ${s.clientState}`, 'ok');
+    $('port').value = s.serverPort;
+  }catch(e){ banner('启动失败：' + e.message, 'bad'); }
+};
+
+$('btn-stop').onclick = async () => {
+  try{
+    const s = await api('/api/stop', {});
+    renderStatus(s);
+    banner('已停止两个驱动', 'info');
+  }catch(e){ banner('停止失败：' + e.message, 'bad'); }
+};
+
+$('btn-conn').onclick = async () => {
+  banner('正在运行连通测试…', 'info');
+  try{
+    const r = await api('/api/connectivity', { message: $('msg').value });
+    renderChecks(r);
+    banner(r.passed ? '连通测试全部通过' : '连通测试存在失败项', r.passed ? 'ok' : 'bad');
+    await refreshStatus();
+  }catch(e){
+    banner('连通测试异常：' + e.message, 'bad');
+  }
+};
+
+(async () => {
+  try{
+    protocols = await api('/api/protocols');
+    fillSelect($('cli-proto'), $('cli-desc'));
+    fillSelect($('srv-proto'), $('srv-desc'));
+    $('srv-proto').value = protocols[0].id;
+    $('srv-proto').dispatchEvent(new Event('change'));
+    await refreshStatus();
+  }catch(e){ banner('加载协议目录失败：' + e.message, 'bad'); }
+  setInterval(refreshStatus, 1500);
+})();
+</script>
+</body>
+</html>

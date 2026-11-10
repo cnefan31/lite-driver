@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>LiteDriver.TestBench</AssemblyName>
+    <RootNamespace>LiteDriver.TestBench</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/LiteDriver/LiteDriver.csproj" />
+    <ProjectReference Include="../../src/LiteDriver.Hosting/LiteDriver.Hosting.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 用 NanoServer 承载可视化测试台页面 -->
+    <PackageReference Include="NanoServer" Version="1.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 前端页面随程序集嵌入，单文件即可运行 -->
+    <EmbeddedResource Include="wwwroot/index.html" />
+  </ItemGroup>
+
+</Project>

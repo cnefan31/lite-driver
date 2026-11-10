@@ -18,6 +18,7 @@ src/LiteDriver/                核心库，零 NuGet 依赖
   Observability/               事件与观察者
 src/LiteDriver.Hosting/        可选：通用主机与 DI 集成
 samples/LiteDriver.SampleHost/ 通用主机示例 + 本地模拟设备
+samples/LiteDriver.TestBench/  可视化测试台：双驱动互连 + 协议切换 + 连通断言
 tests/LiteDriver.Tests/        单元与环回集成测试
 tests/LiteDriver.AotSmoke/     NativeAOT 原生二进制 smoke（零依赖核心）
 tests/LiteDriver.Hosting.AotSmoke/  NativeAOT smoke（通用主机集成）

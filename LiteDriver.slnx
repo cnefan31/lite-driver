@@ -5,6 +5,7 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/LiteDriver.SampleHost/LiteDriver.SampleHost.csproj" />
+    <Project Path="samples/LiteDriver.TestBench/LiteDriver.TestBench.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LiteDriver.Tests/LiteDriver.Tests.csproj" />
