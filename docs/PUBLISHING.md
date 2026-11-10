@@ -85,6 +85,7 @@ dotnet build
 | 令牌交换 401 | workflow 的 job 未声明 `environment: release` | job 级必须有同名 environment |
 | `NUGET_USER` 为空 | secret 建在仓库级而 job 用 environment 级（或反之） | `gh secret list --env release` 核对 |
 | 包内容校验失败 | 核心包出现依赖 | 检查 csproj 是否被误加 `PackageReference` |
+| Hosting 包依赖膨胀 | 误加了运行时实现包 | 只允许 `*Abstractions`；CI 会打印 Hosting 包的实际依赖组 |
 | AOT smoke 失败 | 新增代码引入反射或动态代码 | 看 CI 的 IL2026/IL3050/IL2072 告警，改用源生成或静态工厂 |
 | `--skip-duplicate` 导致空推送 | 版本号已存在 | NuGet 不允许覆盖同版本，改版本号重新打 tag |
 

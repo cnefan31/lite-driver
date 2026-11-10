@@ -2,6 +2,7 @@ using System.Linq;
 using LiteDriver.Configuration;
 using LiteDriver.Observability;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace LiteDriver.Hosting;
@@ -77,8 +78,9 @@ public static class LiteDriverServiceCollectionExtensions
         var builder = new LiteDriverBuilder();
         configureKinds(builder);
 
-        services.AddSingleton(builder);
-        services.AddSingleton(sp =>
+        // 用 TryAdd 语义：重复调用 AddLiteDriver 不会注册多个实例或重复启动。
+        services.TryAddSingleton(builder);
+        services.TryAddSingleton(sp =>
         {
             // 观察者是可选依赖：容器内有 IDriverObserver 就用，否则零开销 Null 实现。
             var observer = sp.GetService<IDriverObserver>() ?? NullDriverObserver.Instance;
@@ -86,16 +88,16 @@ public static class LiteDriverServiceCollectionExtensions
             return LiteDriverFactory.BuildWithObserver(configured, observer);
         });
 
-        services.AddSingleton(sp =>
+        services.TryAddSingleton(sp =>
         {
             var options = new LiteDriverHostOptions();
             configureHost?.Invoke(options);
             return options;
         });
 
-        services.AddHostedService(sp => new LiteDriverHostedService(
-            sp.GetRequiredService<LiteDriver>(),
-            sp.GetRequiredService<LiteDriverHostOptions>()));
+        // 必须用实现类型登记：TryAddEnumerable 靠 ServiceType+ImplementationType 去重，
+        // 传工厂委托会被判定为与其它 IHostedService 不可区分而抛 ArgumentException。
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, LiteDriverHostedService>());
 
         return services;
     }

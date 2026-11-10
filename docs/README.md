@@ -19,12 +19,13 @@ src/LiteDriver/                核心库，零 NuGet 依赖
 src/LiteDriver.Hosting/        可选：通用主机与 DI 集成
 samples/LiteDriver.SampleHost/ 通用主机示例 + 本地模拟设备
 tests/LiteDriver.Tests/        单元与环回集成测试
-tests/LiteDriver.AotSmoke/     NativeAOT 原生二进制 smoke
+tests/LiteDriver.AotSmoke/     NativeAOT 原生二进制 smoke（零依赖核心）
+tests/LiteDriver.Hosting.AotSmoke/  NativeAOT smoke（通用主机集成）
 ```
 
 ## 关键设计约束
 
-1. 核心不引用任何 NuGet 包（CI 会解包校验依赖组为空）
+1. 核心不引用任何 NuGet 包（CI 会解包校验依赖组为空）；Hosting 包只引用 `*Abstractions` 抽象包
 2. 设备种类只能通过启动期冻结的显式工厂注册，禁止反射与运行时代码生成
 3. 每条物理连接拥有独立 decoder、缓冲、写锁、心跳计数与在途表
 4. 写命令断链后只返回 `SentOutcomeUnknown`，绝不自动重放

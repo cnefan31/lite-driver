@@ -56,7 +56,8 @@ jobs:
           set -e
           cd artifacts
           rm -rf verify && mkdir verify && cd verify
-          unzip -o -q ../LiteDriver.1.0.0.nupkg
+          CORE=$(ls ../LiteDriver.[0-9]*.nupkg | head -1)
+          unzip -o -q "$CORE"
           if grep -q '<dependency ' LiteDriver.nuspec; then
             echo "::error::LiteDriver 核心包出现 PackageReference 依赖，违反零依赖承诺"
             grep '<dependency ' LiteDriver.nuspec
@@ -64,6 +65,19 @@ jobs:
           fi
           echo "核心包依赖组为空，符合零依赖承诺"
           grep -o 'targetFramework="[^"]*"' LiteDriver.nuspec | sort -u
+
+          rm -rf v2 && mkdir v2 && cd v2
+          HOST=$(ls ../../LiteDriver.Hosting.[0-9]*.nupkg | head -1)
+          unzip -o -q "$HOST"
+          echo "=== LiteDriver.Hosting 依赖检查（只允许 *Abstractions）==="
+          DEPS=$(grep -o 'id="[^"]*"' LiteDriver.Hosting.nuspec | sed 's/id="//;s/"//' | grep -v '^LiteDriver$' | sort -u)
+          echo "$DEPS"
+          BAD=$(echo "$DEPS" | grep -v -E '\.Abstractions$' | grep -v '^$' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Hosting 包出现非 Abstractions 依赖：$BAD"
+            exit 1
+          fi
+          echo "Hosting 包只依赖 Abstractions，符合轻量承诺"
 
       - name: 上传包产物
         uses: actions/upload-artifact@v4
@@ -136,6 +150,24 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then BIN="$BIN.exe"; fi
           "$BIN" | tee smoke8.log
           grep -q "ALL CHECKS PASSED" smoke8.log
+
+      - name: 发布并运行 Hosting 集成的原生二进制（net10.0 / net8.0）
+        shell: bash
+        run: |
+          set -e
+          for TFM in net10.0 net8.0; do
+            OUT="publish/host-${TFM}"
+            dotnet publish tests/LiteDriver.Hosting.AotSmoke/LiteDriver.Hosting.AotSmoke.csproj \
+              -c Release -f "$TFM" -r ${{ matrix.rid }} -o "$OUT" -warnaserror
+            if [ -f "$OUT/LiteDriver.Hosting.AotSmoke.runtimeconfig.json" ]; then
+              echo "::error::$TFM Hosting 产物含 runtimeconfig.json，不是真 AOT"
+              exit 1
+            fi
+            BIN="$OUT/LiteDriver.Hosting.AotSmoke"
+            if [ "${{ runner.os }}" = "Windows" ]; then BIN="$BIN.exe"; fi
+            "$BIN" | tee "host-${TFM}.log"
+            grep -q "ALL CHECKS PASSED" "host-${TFM}.log"
+          done
 
   sample-host:
     name: 通用主机示例实跑

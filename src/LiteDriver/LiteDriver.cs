@@ -10,7 +10,7 @@ namespace LiteDriver;
 /// 驱动门面：唯一资源所有者。管理配置事务、设备与监听端点的生命周期、观测事件与优雅停机。
 /// 一个实例可同时管理主动拨号链路与被动接入链路。
 /// </summary>
-public sealed class LiteDriver : IAsyncDisposable
+public sealed class LiteDriver : IAsyncDisposable, IDisposable
 {
     private readonly KindRegistry _kinds;
     private readonly DriverLimits _limits;
@@ -697,6 +697,12 @@ public sealed class LiteDriver : IAsyncDisposable
         _configGate.Dispose();
         _lifetime.Dispose();
     }
+
+    /// <summary>
+    /// 同步释放。DI 容器的同步 <c>Dispose()</c> 要求服务实现 <see cref="IDisposable"/>，
+    /// 否则会抛“only implements IAsyncDisposable”。此处同步等待停机完成。
+    /// </summary>
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     /// <summary>转发子组件事件，保留其全部字段（设备、连接、epoch 等）。</summary>
     private void EmitEvent(DriverEvent e)

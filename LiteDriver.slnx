@@ -9,5 +9,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/LiteDriver.Tests/LiteDriver.Tests.csproj" />
     <Project Path="tests/LiteDriver.AotSmoke/LiteDriver.AotSmoke.csproj" />
+    <Project Path="tests/LiteDriver.Hosting.AotSmoke/LiteDriver.Hosting.AotSmoke.csproj" />
   </Folder>
 </Solution>

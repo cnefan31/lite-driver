@@ -28,6 +28,17 @@ dotnet add package LiteDriver.Hosting   # 需要通用主机集成时
 
 支持 `net8.0` 与 `net10.0`。
 
+### 依赖声明
+
+| 包 | 依赖 |
+| --- | --- |
+| `LiteDriver` | **无**（零 NuGet 依赖，仅 BCL） |
+| `LiteDriver.Hosting` | `Microsoft.Extensions.Hosting.Abstractions`、`Microsoft.Extensions.DependencyInjection.Abstractions` |
+
+Hosting 包**只引用抽象包**，不引入任何运行时实现（不含 `Microsoft.Extensions.Hosting` 本体、不含 DI 容器实现、不含日志实现）。宿主自己决定用哪套实现。
+
+刻意不引用 `Microsoft.Extensions.Options`：本包不使用 `IOptions`，选项以 `LiteDriverHostOptions` POCO 显式传递。
+
 ## 最小示例
 
 ```csharp

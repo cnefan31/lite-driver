@@ -13,7 +13,7 @@
 
   <PropertyGroup>
     <PackageId>LiteDriver.Hosting</PackageId>
-    <Version>1.0.0</Version>
+    <Version>0.1.1</Version>
     <Description>LiteDriver 的 .NET 通用主机集成：把驱动作为 IHostedService 托管，并从 DI 容器解析依赖。核心包保持零依赖。</Description>
     <PackageTags>tcp;socket;industrial;generic-host;hostedservice;di;aot;nativeaot</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -26,9 +26,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 只引用抽象包，不引入任何运行时实现，与 NanoServer 的做法一致。
+         这些包分别提供 net8.0 与 net10.0 资产，双目标下均能正确解析。
+         刻意不引用 Microsoft.Extensions.Options：本包不使用 IOptions，
+         选项通过 LiteDriverHostOptions 以 POCO 形式显式传递。 -->
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>
