@@ -500,7 +500,16 @@ internal sealed class SessionRunner
         {
             if (acquired)
             {
-                _singleFlight.Release();
+                // 拆链路径可能已先一步释放信号量；在途 Exchange 的 finally 必须能被容忍，
+                // 否则会抛 ObjectDisposedException 覆盖掉真正的命令结果语义。
+                try
+                {
+                    _singleFlight.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 会话已释放，无需归还许可。
+                }
             }
         }
     }
@@ -538,7 +547,8 @@ internal sealed class SessionRunner
             frame.Dispose();
         }
 
-        _singleFlight.Dispose();
+        // 刻意不 Dispose _singleFlight：ExchangeAsync 的 finally 可能仍在归还许可。
+        // SemaphoreSlim 不持有非托管资源，由 GC 回收即可，避免竞态导致的 ObjectDisposedException。
         _cts.Dispose();
     }
 

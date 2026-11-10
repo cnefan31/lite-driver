@@ -458,7 +458,15 @@ internal sealed class OutboundSupervisor : IAsyncDisposable
         }
         finally
         {
-            _exchangeGate.Release();
+            // 停机路径可能已释放门闩；在途 Exchange 的 finally 必须容忍，否则会掩盖真实错误。
+            try
+            {
+                _exchangeGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // 监管器已释放，无需归还许可。
+            }
         }
     }
 
@@ -520,7 +528,9 @@ internal sealed class OutboundSupervisor : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync().ConfigureAwait(false);
-        _exchangeGate.Dispose();
+
+        // 刻意不 Dispose _exchangeGate：在途 ExchangeAsync 的 finally 仍可能归还许可。
+        // SemaphoreSlim 不持有非托管资源，交给 GC 回收即可，避免竞态抛 ObjectDisposedException。
         _lifetime.Dispose();
     }
 }
