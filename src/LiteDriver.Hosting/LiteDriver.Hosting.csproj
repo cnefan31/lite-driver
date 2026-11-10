@@ -13,7 +13,7 @@
 
   <PropertyGroup>
     <PackageId>LiteDriver.Hosting</PackageId>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Description>LiteDriver 的 .NET 通用主机集成：把驱动作为 IHostedService 托管，并从 DI 容器解析依赖。核心包保持零依赖。</Description>
     <PackageTags>tcp;socket;industrial;generic-host;hostedservice;di;aot;nativeaot</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

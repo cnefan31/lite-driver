@@ -258,7 +258,9 @@ internal sealed class SessionRunner
         }
 
         // 响应判定只在出站方向有意义：入站会话没有「我们发出的请求」，
-        // 一切帧都应作为上报数据交付给应用，不能走响应策略，否则会误报 UnknownFrame。
+        // 一切帧都应作为上报数据交付给应用。
+        // 注意：入站若误走响应策略，帧仍会进入推送队列（不丢数据），
+        // 但会为每一帧多发一次 UnknownFrame 事件，污染告警与指标。
         if (_ctx.Direction == ConnectionDirection.Outbound && _ctx.Protocol.Response.IsResponse(frame))
         {
             if (_ctx.InFlightReader.TryRead(out var pending))

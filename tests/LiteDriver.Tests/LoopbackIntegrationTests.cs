@@ -428,7 +428,8 @@ public sealed class LoopbackIntegrationTests
     {
         // 回归防护：入站方向不得走响应判定。
         // 若误走，默认 NextFrameResponsePolicy 会把每一帧当「响应」，
-        // 无在途请求时记 UnknownFrame 后丢弃，应用永远收不到上报数据。
+        // 无在途请求时为每帧多发一次 UnknownFrame 事件（帧本身仍会进推送队列）。
+        // 本测试锁定「应用能收到帧」，事件整洁性由下面的断言间接保障。
         await using var driver = NewDriver();
 
         await driver.StartAsync(new DriverConfig
@@ -470,6 +471,68 @@ public sealed class LoopbackIntegrationTests
 
         Assert.NotNull(frame);
         Assert.Equal("PING", Encoding.ASCII.GetString(frame!.Payload.Span[2..]));
+    }
+
+    [Fact]
+    public async Task InboundFrame_ShouldNotEmitUnknownFrameEvent()
+    {
+        // 直接锁定本次修正的价值：入站帧不得产生 UnknownFrame 噪音。
+        // 帧本身在修正前也不会丢（仍进推送队列），但每帧多发一次 UnknownFrame
+        // 会污染按事件配置的告警与指标，因此必须单独断言事件整洁性。
+        var unknownFrames = 0;
+        var observer = new DelegateDriverObserver(e =>
+        {
+            if (e.Kind == DriverEventKind.UnknownFrame)
+            {
+                Interlocked.Increment(ref unknownFrames);
+            }
+        });
+
+        await using var driver = new LiteDriverBuilder()
+            .RegisterKind("line-lp", static ctx => new LineDeviceKind(ctx))
+            .UseObserver(observer)
+            .Build();
+
+        await driver.StartAsync(new DriverConfig
+        {
+            Listeners =
+            [
+                new ListenerDescriptor
+                {
+                    ListenerId = "gw", KindId = "line-lp", Host = "127.0.0.1", Port = 0, MaxSessions = 2
+                }
+            ]
+        });
+
+        var port = driver.GetListenerPorts()["gw"];
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, port);
+        var stream = client.GetStream();
+        await stream.WriteAsync(new byte[] { 0, 4, (byte)'P', (byte)'I', (byte)'N', (byte)'G' });
+        await stream.FlushAsync();
+
+        InboundSessionHandle session = default;
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline && !session.IsValid)
+        {
+            var sessions = driver.GetInboundSessions("gw");
+            if (sessions.Count > 0)
+            {
+                session = sessions[0];
+                break;
+            }
+
+            await Task.Delay(50);
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var frame = await session.ReceiveAsync(cts.Token);
+        Assert.NotNull(frame);
+        Assert.Equal("PING", Encoding.ASCII.GetString(frame!.Payload.Span[2..]));
+
+        // 给事件一点时间落定。
+        await Task.Delay(200);
+        Assert.Equal(0, Volatile.Read(ref unknownFrames));
     }
 
     private static int GetFreePort()
