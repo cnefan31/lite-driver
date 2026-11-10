@@ -360,7 +360,7 @@ public sealed class LoopbackIntegrationTests
             }
             catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException)
             {
-                // 测试结束。
+                // 测试结束；Linux 上 Stop 后挂起的 Accept 会抛 SocketException。
             }
         });
 

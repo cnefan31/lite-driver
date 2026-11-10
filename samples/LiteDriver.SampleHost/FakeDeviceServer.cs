@@ -45,12 +45,9 @@ public sealed class FakeDeviceServer : IAsyncDisposable
             {
                 client = await _listener.AcceptTcpClientAsync(_cts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException)
             {
-                return;
-            }
-            catch (ObjectDisposedException)
-            {
+                // Stop() 之后挂起的 Accept 在 Linux 上会抛 SocketException，属正常停止。
                 return;
             }
 

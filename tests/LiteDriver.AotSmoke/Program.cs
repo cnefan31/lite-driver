@@ -269,8 +269,10 @@ internal sealed class SmokeDevice : IAsyncDisposable
             {
                 client = await _listener.AcceptTcpClientAsync(_cts.Token);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException)
             {
+                // Linux 上 listener.Stop() 会让挂起的 Accept 抛 SocketException(Invalid argument)，
+                // 必须一并吞掉，否则后台任务异常会中止整个进程。
                 return;
             }
 
