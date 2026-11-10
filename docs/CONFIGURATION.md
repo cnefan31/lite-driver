@@ -75,6 +75,59 @@
 
 ---
 
+## 四·五、起始/结束标记协议（kindId = 自定义）
+
+用 `DelimitedKind` 实现「固定字节开始 / 固定字节结束」的帧，标记通过十六进制配置。两种配置方式二选一。
+
+### 方式一：注册时固定（不依赖配置文件）
+
+```csharp
+builder.RegisterKind(
+    "stx-etx",
+    DelimitedKind.CreateFactory(startHex: "02", endHex: "03"),
+    DelimitedKind.ValidateSettings);
+```
+
+### 方式二：由配置文件提供
+
+```csharp
+builder.RegisterKind("delimited", ctx => new DelimitedKind(ctx), DelimitedKind.ValidateSettings);
+```
+
+配置文件里写 `kindSettings`：
+
+```json
+{
+  "devices": [
+    {
+      "deviceId": "meter-01",
+      "kindId": "delimited",
+      "endpoints": [{ "host": "192.168.1.20", "port": 4001 }],
+      "kindSettings": { "start": "02", "end": "03" }
+    }
+  ]
+}
+```
+
+| kindSettings 键 | 说明 |
+| --- | --- |
+| `start` | 起始标记，十六进制字符串；可省略 |
+| `end` | 结束标记，十六进制字符串；可省略 |
+
+**两者至少要有一个非空**，否则配置校验阶段即报错（`kind_settings_invalid`），不会拖到首次收包才失败。
+
+支持的十六进制写法：`"02"`、`"03ff"`、`"0x02"`、`"0x02,0x03"`、`"FF FF FF FF"`。标记上限 16 字节。
+
+### 三种配置的切帧语义
+
+| start | end | 切帧规则 | 适用场景 |
+| --- | --- | --- | --- |
+| `02` | `03` | 起始到结束 | 最常见的 STX/ETX 协议 |
+| `02` | 空 | 本起始到下一起始之前 | 定长或自身可定界的帧 |
+| 空 | `ffffffff` | 缓冲区开头到结束标记 | 尾部有固定终止符的协议 |
+
+> 仅配结束标记时，结束标记之前的全部字节都算一帧内容，断线后残留的半截数据会并入下一帧。这是缺少起始标记的固有约束，不是缺陷。
+
 ## 五、EndpointDescriptor
 
 | 参数 | 默认 | 边界 | 说明 |

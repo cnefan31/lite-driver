@@ -152,8 +152,40 @@ public interface IDeviceKind
 | `LengthPrefixFrameDecoder` | 长度前缀分包，支持 1/2/4 字节、大小端、前缀是否含头 |
 | `TerminatorFrameDecoder` | 终止符分包（如 `\r\n`） |
 | `PassthroughFrameDecoder` | 每次读取即一帧，仅用于设备侧本就分界的场景 |
+| `DelimitedFrameDecoder` | **起始/结束标记分帧**，两者独立可配且至少配一个，支持多字节标记 |
 
-对应编码器：`LengthPrefixFrameEncoder`、`TerminatorFrameEncoder`、`PassthroughFrameEncoder`。
+对应编码器：`LengthPrefixFrameEncoder`、`TerminatorFrameEncoder`、`PassthroughFrameEncoder`、`DelimitedFrameEncoder`。
+
+### 起始/结束标记分帧（DelimitedFrameDecoder）
+
+适用于「每帧以固定字节开始、以固定字节结束」的协议，标记用十六进制配置。
+
+```csharp
+// 直接构造：起始 0x02，结束 0x03
+var decoder = new DelimitedFrameDecoder([0x02], [0x03], maxFrameSize);
+
+// 多字节标记：结束为 0x03 0xFF
+var decoder2 = new DelimitedFrameDecoder([0x02], [0x03, 0xFF], maxFrameSize);
+
+// 只有结束标记（例如以 FF FF FF FF 结尾）
+var decoder3 = new DelimitedFrameDecoder([], [0xFF, 0xFF, 0xFF, 0xFF], maxFrameSize);
+```
+
+三种形态的行为：
+
+| 配置 | 切帧规则 |
+| --- | --- |
+| 起始 + 结束 | 从起始标记到最近的结束标记 |
+| 仅起始标记 | 本起始标记到**下一个**起始标记之前 |
+| 仅结束标记 | 缓冲区开头到最近结束标记（之前全部算一帧） |
+
+**交付的帧包含起始与结束标记本身**。起始标记之前的无关字节会被静默丢弃并重新同步。
+
+> **仅配结束标记的固有约束**：没有起始标记就无法判断帧从哪里开始，因此上一个结束标记之后到本结束标记之前的全部字节都会被当作一帧内容。断线重连后残留的半截数据会并入下一帧。若协议无法保证这一点，请同时配置起始标记。
+
+#### 十六进制工具
+
+`HexMarker.TryParse` 支持 `"02"`、`"03ff"`、`"0x02,0x03"`、`"FF FF"` 等写法；空字符串表示未配置。标记上限 16 字节。
 
 解码器返回 `FrameDecodeResult`：`NeedMore` / `Frame` / `Fatal`。`Fatal` 表示字节流已不可信，库会关闭当前连接，不尝试继续猜边界。
 

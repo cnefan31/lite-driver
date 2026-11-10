@@ -66,6 +66,16 @@ public static class ProtocolCatalog
             }),
 
         new ProtocolDescriptor(
+            "stx-etx",
+            "起始/结束标记（默认 02..03）",
+            "帧 = 起始标记 + 数据 + 结束标记，两者均可配十六进制且至少配一个。测试台固定用 02 与 03。",
+            "UTF-8 文本，包 02/03",
+            SupportsHeartbeat: false,
+            SupportsHandshake: false,
+            static ctx => DelimitedTestKind.Factory(ctx),
+            static payload => Encoding.UTF8.GetBytes("ECHO:" + Encoding.UTF8.GetString(payload))),
+
+        new ProtocolDescriptor(
             "modbus-like",
             "Modbus 风格（MBAP 类似）",
             "帧 = 事务ID(2) + 协议ID(2) + 长度(2) + 单元ID(1) + 功能码(1) + 数据。用于验证带事务标识的协议。",
@@ -338,4 +348,20 @@ public sealed class MbapFrameEncoder : IFrameEncoder
         payload.CopyTo(span[8..]);
         writer.Advance(6 + length);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 5) 起始/结束标记（使用核心库 DelimitedKind）
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// 测试台用的标记协议：固定 start=02 end=03，让页面可直接验证该分帧器。
+/// 核心库的 <see cref="DelimitedKind"/> 既支持注册时固定标记，
+/// 也支持从 kindSettings 的 start/end 读取。
+/// </summary>
+public static class DelimitedTestKind
+{
+    /// <summary>注册进驱动的工厂（标记固定在注册时）。</summary>
+    public static Func<ProtocolContext, IDeviceKind> Factory { get; } =
+        DelimitedKind.CreateFactory("02", "03");
 }

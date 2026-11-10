@@ -190,6 +190,19 @@ internal sealed class SessionRunner
             var result = _ctx.Protocol.Decoder.Decode(span, out var consumed, out var frame);
             if (result == FrameDecodeResult.NeedMore)
             {
+                // 解码器可以借 NeedMore 报告「已丢弃的前导字节」（例如丢弃起始标记之前的垃圾）。
+                // 此时必须前移缓冲并继续解析，否则垃圾会永久卡在缓冲区里。
+                if (consumed > 0)
+                {
+                    _accumulated -= consumed;
+                    if (_accumulated > 0)
+                    {
+                        _accumulator.AsSpan(consumed, _accumulated).CopyTo(_accumulator);
+                    }
+
+                    continue;
+                }
+
                 if (!_handshakeDone && _ctx.Time.GetUtcNow().UtcTicks > _handshakeDeadlineTicks)
                 {
                     reason = SessionEndReason.HandshakeTimeout;

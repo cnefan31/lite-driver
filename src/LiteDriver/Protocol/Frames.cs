@@ -290,3 +290,309 @@ public sealed class PassthroughFrameDecoder : IFrameDecoder
         return FrameDecodeResult.Frame;
     }
 }
+
+/// <summary>
+/// 十六进制标记工具：把 <c>"02"</c>、<c>"03ff"</c>、<c>"02 03 FF"</c>、<c>"0x02,0x03"</c>
+/// 这类写法解析为字节序列。空字符串或 null 表示"未配置该标记"。
+/// </summary>
+public static class HexMarker
+{
+    /// <summary>可配置标记的最大字节数。</summary>
+    public const int MaxLength = 16;
+
+    /// <summary>尝试解析十六进制标记。空输入返回空数组（表示未配置）。</summary>
+    public static bool TryParse(string? text, out byte[] marker, out string? error)
+    {
+        marker = [];
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
+        var digits = new System.Text.StringBuilder(text.Length);
+        foreach (var ch in text)
+        {
+            if (ch is ' ' or ',' or '-' or ':' or '\t' || ch == '\r' || ch == '\n')
+            {
+                continue;
+            }
+
+            if (ch == 'x' || ch == 'X')
+            {
+                // 支持 0x02 写法：丢弃 'x'，同时丢掉它前面刚收集的那个 '0'，
+                // 否则 "0x02" 会变成 "002" 这类错误结果。
+                if (digits.Length > 0 && digits[^1] == '0')
+                {
+                    digits.Length--;
+                }
+
+                continue;
+            }
+
+            if (!Uri.IsHexDigit(ch))
+            {
+                error = $"非法十六进制字符 '{ch}'（只允许 0-9 a-f A-F 与分隔符）";
+                return false;
+            }
+
+            digits.Append(ch);
+        }
+
+        if (digits.Length == 0)
+        {
+            return true;
+        }
+
+        if (digits.Length % 2 != 0)
+        {
+            error = $"十六进制位数必须为偶数，实际 {digits.Length} 位";
+            return false;
+        }
+
+        var count = digits.Length / 2;
+        if (count > MaxLength)
+        {
+            error = $"标记长度 {count} 字节超过上限 {MaxLength}";
+            return false;
+        }
+
+        var bytes = new byte[count];
+        for (var i = 0; i < count; i++)
+        {
+            bytes[i] = Convert.ToByte(digits.ToString(i * 2, 2), 16);
+        }
+
+        marker = bytes;
+        return true;
+    }
+
+    /// <summary>把字节序列格式化为大写十六进制，便于日志与回显。</summary>
+    public static string Format(ReadOnlySpan<byte> bytes) =>
+        bytes.Length == 0 ? "(空)" : Convert.ToHexString(bytes);
+}
+
+/// <summary>
+/// 起始/结束标记分帧器。
+/// <para>
+/// 起始标记与结束标记各自独立可配，<b>至少配置一个</b>。支持三种形态：
+/// 仅起始标记、仅结束标记、两者都有。配置后交付的帧<b>包含</b>标记本身。
+/// </para>
+/// <para>
+/// 仅配置起始标记时，一帧的范围是「本起始标记到下一个起始标记之前」；
+/// 最后一帧需要等到下一个起始标记到达才交付，因此该模式天然有一帧延迟。
+/// </para>
+/// <para>
+/// 起始标记之前的无关字节会被静默丢弃并重新同步（通过 <c>NeedMore</c> + <c>consumed</c> 上报丢弃量）。
+/// </para>
+/// <para>
+/// <b>仅配置结束标记时的固有约束</b>：没有起始标记就无法判断哪里是帧的开头，
+/// 因此「上一个结束标记之后到本结束标记之前」的全部字节都会被当作一帧内容，
+/// 断线重连后残留的半截数据会并入下一帧。若设备协议无法保证这一点，
+/// 请同时配置起始标记。
+/// </para>
+/// </summary>
+public sealed class DelimitedFrameDecoder : IFrameDecoder
+{
+    private readonly byte[] _start;
+    private readonly byte[] _end;
+    private readonly int _maxFrameSize;
+
+    /// <summary>构造函数。<paramref name="start"/> 与 <paramref name="end"/> 不能同时为空。</summary>
+    public DelimitedFrameDecoder(ReadOnlySpan<byte> start, ReadOnlySpan<byte> end, int maxFrameSize)
+    {
+        if (start.IsEmpty && end.IsEmpty)
+        {
+            throw new ArgumentException("起始标记与结束标记至少要配置一个");
+        }
+
+        if (start.Length > HexMarker.MaxLength || end.Length > HexMarker.MaxLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(start), $"标记长度不得超过 {HexMarker.MaxLength} 字节");
+        }
+
+        _start = start.ToArray();
+        _end = end.ToArray();
+        _maxFrameSize = maxFrameSize;
+    }
+
+    /// <summary>起始标记（可能为空）。</summary>
+    public ReadOnlySpan<byte> Start => _start;
+
+    /// <summary>结束标记（可能为空）。</summary>
+    public ReadOnlySpan<byte> End => _end;
+
+    public FrameDecodeResult Decode(ReadOnlySpan<byte> buffer, out int consumed, out ReadOnlySpan<byte> frame)
+    {
+        consumed = 0;
+        frame = default;
+
+        if (_start.Length > 0)
+        {
+            return DecodeWithStart(buffer, out consumed, out frame);
+        }
+
+        return DecodeEndOnly(buffer, out consumed, out frame);
+    }
+
+    /// <summary>有起始标记：可再叠加结束标记，或依靠下一个起始标记切分。</summary>
+    private FrameDecodeResult DecodeWithStart(ReadOnlySpan<byte> buffer, out int consumed, out ReadOnlySpan<byte> frame)
+    {
+        consumed = 0;
+        frame = default;
+
+        // 1) 定位起始标记；其之前的字节属于前导垃圾，丢弃并重新同步。
+        var startIndex = buffer.IndexOf(_start);
+        if (startIndex < 0)
+        {
+            // 整个缓冲都不是有效的起始前缀：全部丢弃。
+            // 但保留末尾可能与起始标记前缀重叠的若干字节，避免把跨包的 start 切断。
+            var keep = TrailingPrefixOverlap(buffer, _start);
+            consumed = buffer.Length - keep;
+            return FrameDecodeResult.NeedMore;
+        }
+
+        if (startIndex > 0)
+        {
+            // 丢弃起始标记之前的垃圾字节，下一轮即可对齐到 start。
+            consumed = startIndex;
+            return FrameDecodeResult.NeedMore;
+        }
+
+        // 此刻 buffer 以起始标记开头。
+        var bodyStart = _start.Length;
+
+        if (_end.Length > 0)
+        {
+            // 2a) 有结束标记：从 bodyStart 起找结束标记。
+            var searchFrom = bodyStart;
+            while (true)
+            {
+                var endIndex = buffer[searchFrom..].IndexOf(_end);
+                if (endIndex < 0)
+                {
+                    if (buffer.Length > _maxFrameSize)
+                    {
+                        return FrameDecodeResult.Fatal;
+                    }
+
+                    return FrameDecodeResult.NeedMore;
+                }
+
+                var endPos = searchFrom + endIndex;
+                var total = endPos + _end.Length;
+                if (total > _maxFrameSize)
+                {
+                    return FrameDecodeResult.Fatal;
+                }
+
+                consumed = total;
+                frame = buffer[..total];
+                return FrameDecodeResult.Frame;
+            }
+        }
+
+        // 2b) 仅有起始标记：本帧到下一个起始标记之前。
+        var nextStart = buffer[_start.Length..].IndexOf(_start);
+        if (nextStart < 0)
+        {
+            if (buffer.Length > _maxFrameSize)
+            {
+                return FrameDecodeResult.Fatal;
+            }
+
+            // 需要更多数据才能确认本帧边界。
+            return FrameDecodeResult.NeedMore;
+        }
+
+        var boundary = _start.Length + nextStart;
+        if (boundary > _maxFrameSize)
+        {
+            return FrameDecodeResult.Fatal;
+        }
+
+        consumed = boundary;
+        frame = buffer[..boundary];
+        return FrameDecodeResult.Frame;
+    }
+
+    /// <summary>仅有结束标记：从缓冲区开头找结束标记，其之前都算一帧。</summary>
+    private FrameDecodeResult DecodeEndOnly(ReadOnlySpan<byte> buffer, out int consumed, out ReadOnlySpan<byte> frame)
+    {
+        consumed = 0;
+        frame = default;
+
+        var endIndex = buffer.IndexOf(_end);
+        if (endIndex < 0)
+        {
+            if (buffer.Length > _maxFrameSize)
+            {
+                return FrameDecodeResult.Fatal;
+            }
+
+            return FrameDecodeResult.NeedMore;
+        }
+
+        var total = endIndex + _end.Length;
+        if (total > _maxFrameSize)
+        {
+            return FrameDecodeResult.Fatal;
+        }
+
+        consumed = total;
+        frame = buffer[..total];
+        return FrameDecodeResult.Frame;
+    }
+
+    /// <summary>缓冲区末尾有多少字节是起始标记的前缀，需要保留等待拼接。</summary>
+    private static int TrailingPrefixOverlap(ReadOnlySpan<byte> buffer, ReadOnlySpan<byte> start)
+    {
+        var max = Math.Min(start.Length - 1, buffer.Length);
+        for (var len = max; len > 0; len--)
+        {
+            if (buffer[^len..].SequenceEqual(start[..len]))
+            {
+                return len;
+            }
+        }
+
+        return 0;
+    }
+}
+
+/// <summary>起始/结束标记编码器：按配置包上标记。</summary>
+public sealed class DelimitedFrameEncoder : IFrameEncoder
+{
+    private readonly byte[] _start;
+    private readonly byte[] _end;
+
+    public DelimitedFrameEncoder(ReadOnlySpan<byte> start, ReadOnlySpan<byte> end)
+    {
+        if (start.IsEmpty && end.IsEmpty)
+        {
+            throw new ArgumentException("起始标记与结束标记至少要配置一个");
+        }
+
+        _start = start.ToArray();
+        _end = end.ToArray();
+    }
+
+    public void Encode(ReadOnlySpan<byte> payload, IBufferWriter<byte> writer)
+    {
+        if (_start.Length > 0)
+        {
+            _start.CopyTo(writer.GetSpan(_start.Length));
+            writer.Advance(_start.Length);
+        }
+
+        payload.CopyTo(writer.GetSpan(payload.Length));
+        writer.Advance(payload.Length);
+
+        if (_end.Length > 0)
+        {
+            _end.CopyTo(writer.GetSpan(_end.Length));
+            writer.Advance(_end.Length);
+        }
+    }
+}

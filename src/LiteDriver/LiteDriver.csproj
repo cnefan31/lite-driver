@@ -15,7 +15,7 @@
 
   <PropertyGroup>
     <PackageId>LiteDriver</PackageId>
-    <Version>0.1.2</Version>
+    <Version>0.1.3</Version>
     <Description>面向工业 SOCKET 设备的轻量 TCP 连接管理库：断线重连、运行时增改删设备与监听端点、可插拔帧编解码、显式命令结果语义，零 NuGet 依赖核心并支持 .NET 通用主机与 NativeAOT。</Description>
     <PackageTags>tcp;socket;industrial;plc;gateway;aot;nativeaot;reconnect;lightweight;iot</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

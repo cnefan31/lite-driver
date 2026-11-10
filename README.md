@@ -136,7 +136,29 @@ public sealed class MyProtocol : ISessionProtocol
 }
 ```
 
-内置三种分包器：`FixedLengthFrameDecoder`、`LengthPrefixFrameDecoder`、`TerminatorFrameDecoder`，另有 `PassthroughFrameDecoder`。
+内置四种分包器：`FixedLengthFrameDecoder`、`LengthPrefixFrameDecoder`、`TerminatorFrameDecoder`、`DelimitedFrameDecoder`，另有 `PassthroughFrameDecoder`。
+
+### 起始/结束标记协议
+
+若设备帧「以固定字节开始、以固定字节结束」，直接用 `DelimitedKind`，标记用十六进制配置，两种方式任选：
+
+```csharp
+// 注册时固定：start=0x02, end=0x03
+builder.RegisterKind("stx-etx", DelimitedKind.CreateFactory("02", "03"), DelimitedKind.ValidateSettings);
+
+// 或交给配置文件：kindSettings = { "start": "02", "end": "03" }
+builder.RegisterKind("stx-etx", ctx => new DelimitedKind(ctx), DelimitedKind.ValidateSettings);
+```
+
+起始与结束标记**至少配一个**，都支持多字节（如 `"03ff"`）与 `"0x02,0x03"` 这类写法：
+
+| start | end | 切帧规则 |
+| --- | --- | --- |
+| `02` | `03` | 起始到结束 |
+| `02` | 空 | 本起始到下一起始之前 |
+| 空 | `ffffffff` | 缓冲区开头到结束标记 |
+
+交付的帧**包含标记本身**；起始标记之前的垃圾字节会被静默丢弃并重新同步。
 
 ## 命令结果语义
 

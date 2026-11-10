@@ -246,6 +246,8 @@ public sealed class BenchRuntime : IAsyncDisposable
         "length-prefix" => frame.Length > 2 ? frame[2..].ToArray() : [],
         // 请求帧 = 6 字节 MBAP 头 + 单元ID 1 + 功能码 1 + 数据，业务载荷从第 8 字节开始。
         "modbus-like" => frame.Length > 8 ? frame[8..].ToArray() : [],
+        // 标记协议：剥掉起始 0x02 与结束 0x03，取中间业务数据。
+        "stx-etx" => frame.Length > 2 ? frame[1..^1].ToArray() : [],
         _ => frame.ToArray()
     };
 
@@ -465,6 +467,16 @@ public sealed class BenchRuntime : IAsyncDisposable
                 return frame;
             }
 
+            case "stx-etx":
+            {
+                // 裸 socket 探测也要按标记协议构造：02 + 数据 + 03
+                var frame = new byte[payload.Length + 2];
+                frame[0] = 0x02;
+                payload.CopyTo(frame, 1);
+                frame[^1] = 0x03;
+                return frame;
+            }
+
             case "modbus-like":
             {
                 var frame = new byte[6 + payload.Length];
@@ -489,6 +501,8 @@ public sealed class BenchRuntime : IAsyncDisposable
         "modbus-like" => response.Length > 8
             ? Encoding.UTF8.GetString(response[8..])
             : ($"<short:{response.Length}:{Convert.ToHexString(response)}>"),
+        // 标记协议：去掉首尾标记。
+        "stx-etx" => response.Length > 2 ? Encoding.UTF8.GetString(response[1..^1]) : "",
         _ => Encoding.UTF8.GetString(response)
     };
 

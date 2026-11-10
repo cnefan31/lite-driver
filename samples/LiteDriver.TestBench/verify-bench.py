@@ -5,7 +5,7 @@ import sys
 import urllib.request
 
 BASE = "http://127.0.0.1:8099"
-PROTOCOLS = ["length-prefix", "line-terminator", "fixed-length", "modbus-like"]
+PROTOCOLS = ["length-prefix", "line-terminator", "fixed-length", "stx-etx", "modbus-like"]
 
 
 def post(path, payload):
