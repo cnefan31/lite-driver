@@ -85,6 +85,20 @@ await host.RunAsync();
 
 `LiteDriverHostedService` 只转发启动与停止，不复制状态机、不扫描程序集。启动期配置非法会让主机启动失败，而不是带病运行。
 
+> **注意命名歧义**：命名空间 `LiteDriver` 与类 `LiteDriver` 同名。在**顶层语句**里写 `GetRequiredService<LiteDriver>()` 会被解析成命名空间并报 `CS0118`。
+> 两种规避写法（任选其一）：
+>
+> ```csharp
+> // 1) 类型别名，最简洁
+> using Driver = LiteDriver.LiteDriver;
+> var driver = host.Services.GetRequiredService<Driver>();
+>
+> // 2) 全局限定符
+> var driver = host.Services.GetRequiredService<global::LiteDriver.LiteDriver>();
+> ```
+>
+> 若把代码写在 `namespace LiteDriver.SampleHost { ... }` 这类块内，则不受影响。
+
 ## 实现一个设备种类
 
 只需实现两个接口。`CreateProtocol` 在**每次物理连接**时被调用，必须返回全新实例。

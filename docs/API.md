@@ -28,6 +28,8 @@
 
 ### LiteDriver
 
+> 命名空间 `LiteDriver` 与类 `LiteDriver` 同名。顶层语句直接写 `GetRequiredService<LiteDriver>()` 会报 `CS0118`，请用 `using Driver = LiteDriver.LiteDriver;` 别名或 `global::LiteDriver.LiteDriver` 限定。
+
 | 成员 | 说明 |
 | --- | --- |
 | `State` | `Created / Starting / Running / Stopping / Stopped / Disposed` |
