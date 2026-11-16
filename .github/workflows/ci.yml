@@ -151,6 +151,22 @@ jobs:
           "$BIN" | tee smoke8.log
           grep -q "ALL CHECKS PASSED" smoke8.log
 
+      - name: 发布并运行编排库的原生二进制（net10.0）
+        shell: bash
+        run: |
+          set -e
+          OUT="publish/orch"
+          dotnet publish tests/LiteDriver.Orchestration.AotSmoke/LiteDriver.Orchestration.AotSmoke.csproj \
+            -c Release -f net10.0 -r ${{ matrix.rid }} -o "$OUT" -warnaserror
+          if [ -f "$OUT/LiteDriver.Orchestration.AotSmoke.runtimeconfig.json" ]; then
+            echo "::error::编排库产物含 runtimeconfig.json，不是真 AOT"
+            exit 1
+          fi
+          BIN="$OUT/LiteDriver.Orchestration.AotSmoke"
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="$BIN.exe"; fi
+          "$BIN" | tee orch.log
+          grep -q "ALL CHECKS PASSED" orch.log
+
       - name: 发布并运行 Hosting 集成的原生二进制（net10.0 / net8.0）
         shell: bash
         run: |
@@ -209,6 +225,48 @@ jobs:
       - name: 失败时输出测试台日志
         if: failure()
         run: cat bench.log || true
+
+  orchestration:
+    name: 编排库热应用端到端验证
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 构建编排样例
+        run: dotnet build samples/LiteDriver.Orchestration.Sample/LiteDriver.Orchestration.Sample.csproj -c Release
+
+      - name: 启动编排服务
+        run: |
+          dotnet samples/LiteDriver.Orchestration.Sample/bin/Release/net10.0/LiteDriver.Orchestration.Sample.dll --port 8110 > orch.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -sf -o /dev/null http://127.0.0.1:8110/api/health; then break; fi
+            sleep 0.5
+          done
+          curl -sf -o /dev/null http://127.0.0.1:8110/api/health || { echo "::error::编排服务未启动"; cat orch.log; exit 1; }
+          echo "编排服务已就绪"
+
+      - name: 热应用与增删节点验证
+        run: python3 samples/LiteDriver.Orchestration.Sample/verify-orchestration.py
+
+      - name: 页面可访问性断言
+        run: |
+          set -e
+          curl -sf http://127.0.0.1:8110/ -o page.html
+          grep -q "LiteDriver 功能编排" page.html || { echo "::error::页面标题缺失"; exit 1; }
+          grep -q "客户端" page.html
+          grep -q "服务端" page.html
+          grep -q "保存并应用" page.html
+          echo "页面结构校验通过（$(wc -c < page.html) 字节）"
+
+      - name: 失败时输出日志
+        if: failure()
+        run: cat orch.log || true
 
   sample-host:
     name: 通用主机示例实跑

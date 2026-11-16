@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+  :root{
+    --bg:#0f1115; --canvas:#14171d; --panel:#1a1e26; --panel-2:#212632;
+    --ink:#e8ecf3; --muted:#8b95a7; --line:#2a303c; --line-2:#353d4d;
+    --accent:#4c8dff; --accent-dim:#1e3a6b;
+    --ok:#3ecf8e; --warn:#e8b64c; --bad:#f2635f;
+    --proto:#8b6ce8; --client:#4c8dff; --server:#3ecf8e;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font:13px/1.6 var(--sans);overflow:hidden;display:flex;flex-direction:column}
+
+  /* ---- 顶栏 ---- */
+  .topbar{height:52px;flex:0 0 52px;display:flex;align-items:center;gap:14px;padding:0 16px;
+    border-bottom:1px solid var(--line);background:linear-gradient(180deg,#181c24,#14171d)}
+  .brand{font-size:14px;font-weight:650;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dot.off{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+  .stats{display:flex;gap:6px;margin-left:8px}
+  .chip{font:11px var(--mono);color:var(--muted);background:var(--panel-2);border:1px solid var(--line);
+    border-radius:6px;padding:3px 9px;white-space:nowrap}
+  .chip b{color:var(--ink);font-weight:600}
+  .spacer{flex:1}
+  button{font:600 12px var(--sans);border-radius:7px;border:1px solid var(--line-2);
+    background:var(--panel-2);color:var(--ink);padding:7px 14px;cursor:pointer;transition:.13s}
+  button:hover{border-color:#46506a;background:#262c3a}
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#3d7ce8;border-color:#3d7ce8}
+  button.ghost{background:transparent}
+  button:disabled{opacity:.45;cursor:not-allowed}
+
+  /* ---- 主体三栏 ---- */
+  .main{flex:1;display:grid;grid-template-columns:200px 1fr 320px;min-height:0}
+  .side{border-right:1px solid var(--line);background:var(--panel);overflow-y:auto}
+  .side.right{border-right:0;border-left:1px solid var(--line)}
+  .side-title{font:600 11px var(--sans);text-transform:uppercase;letter-spacing:.08em;
+    color:var(--muted);padding:12px 14px 8px}
+
+  /* 组件托盘 */
+  .palette{padding:0 10px 14px;display:flex;flex-direction:column;gap:8px}
+  .source{display:flex;align-items:center;gap:9px;padding:10px 11px;border-radius:9px;cursor:grab;
+    background:var(--panel-2);border:1px solid var(--line);transition:.13s;user-select:none}
+  .source:hover{border-color:var(--line-2);transform:translateX(2px)}
+  .source:active{cursor:grabbing}
+  .source .ic{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;
+    font-weight:700;flex:0 0 26px}
+  .source[data-kind="Protocol"] .ic{background:rgba(139,108,232,.16);color:var(--proto)}
+  .source[data-kind="Client"] .ic{background:rgba(76,141,255,.16);color:var(--client)}
+  .source[data-kind="Server"] .ic{background:rgba(62,207,142,.16);color:var(--server)}
+  .source .t{font-weight:600;font-size:12.5px}
+  .source .d{font-size:11px;color:var(--muted);line-height:1.35}
+
+  /* 画布 */
+  .canvas-wrap{position:relative;overflow:hidden;background:
+    radial-gradient(circle at 1px 1px,rgba(255,255,255,.05) 1px,transparent 0) 0 0/22px 22px,
+    var(--canvas)}
+  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .canvas{position:absolute;inset:0;transform-origin:0 0}
+  .node{position:absolute;width:190px;border-radius:11px;background:var(--panel);
+    border:1px solid var(--line-2);box-shadow:0 6px 20px rgba(0,0,0,.32);cursor:grab;
+    user-select:none;transition:box-shadow .13s,border-color .13s}
+  .node:hover{border-color:#4a5568}
+  .node.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 8px 26px rgba(76,141,255,.22)}
+  .node.err{border-color:var(--bad);box-shadow:0 0 0 1px var(--bad)}
+  .node.dragging{cursor:grabbing}
+  .node-head{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--line)}
+  .node-head .ic{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;font-size:11px;font-weight:700}
+  .node[data-kind="Protocol"] .node-head .ic{background:rgba(139,108,232,.18);color:var(--proto)}
+  .node[data-kind="Client"] .node-head .ic{background:rgba(76,141,255,.18);color:var(--client)}
+  .node[data-kind="Server"] .node-head .ic{background:rgba(62,207,142,.18);color:var(--server)}
+  .node-head .nm{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .node-body{padding:8px 11px 10px;font-size:11.5px;color:var(--muted);line-height:1.5}
+  .node-body .kv{display:flex;justify-content:space-between;gap:8px}
+  .node-body .kv span:last-child{color:#c3cbd9;font-family:var(--mono);font-size:11px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .badge{display:inline-block;font:10px var(--mono);padding:1px 6px;border-radius:4px;background:var(--panel-2);border:1px solid var(--line)}
+  .badge.ok{color:var(--ok);border-color:rgba(62,207,142,.4);background:rgba(62,207,142,.1)}
+  .badge.warn{color:var(--warn);border-color:rgba(232,182,76,.4);background:rgba(232,182,76,.1)}
+  .badge.bad{color:var(--bad);border-color:rgba(242,99,95,.4);background:rgba(242,99,95,.1)}
+  .port{position:absolute;width:11px;height:11px;border-radius:50%;background:var(--panel-2);
+    border:2px solid var(--line-2);cursor:crosshair;transition:.13s}
+  .port:hover{background:var(--accent);border-color:var(--accent);transform:scale(1.25)}
+  .port.out{right:-6px;top:50%;margin-top:-5.5px}
+  .port.in{left:-6px;top:50%;margin-top:-5.5px}
+  .port.linked{background:var(--accent);border-color:var(--accent)}
+
+  /* 属性面板 */
+  .props{padding:0 14px 16px}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-size:11px;color:var(--muted);margin-bottom:5px;font-weight:500}
+  .field input,.field select,.field textarea{width:100%;padding:7px 9px;border-radius:7px;
+    border:1px solid var(--line-2);background:var(--bg);color:var(--ink);font:12px var(--mono)}
+  .field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--accent)}
+  .field .hint{font-size:10.5px;color:#6b7488;margin-top:4px;line-height:1.4}
+  .field-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .empty{padding:28px 14px;text-align:center;color:#5d667a;font-size:12px;line-height:1.7}
+  .danger{color:var(--bad);border-color:rgba(242,99,95,.35)}
+  .danger:hover{background:rgba(242,99,95,.1);border-color:var(--bad)}
+
+  /* 底部状态条 */
+  .statusbar{height:30px;flex:0 0 30px;display:flex;align-items:center;gap:12px;padding:0 14px;
+    border-top:1px solid var(--line);background:var(--panel);font:11px var(--mono);color:var(--muted)}
+  .statusbar .msg{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .statusbar .msg.ok{color:var(--ok)} .statusbar .msg.bad{color:var(--bad)}
+
+  /* 事件抽屉 */
+  .drawer{position:absolute;right:0;bottom:0;width:320px;max-height:44%;background:var(--panel);
+    border-left:1px solid var(--line);border-top:1px solid var(--line);display:flex;flex-direction:column;
+    transform:translateX(100%);transition:transform .18s;z-index:20}
+  .drawer.open{transform:none}
+  .drawer h4{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+    padding:9px 12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+  .drawer .list{overflow-y:auto;font:10.5px/1.65 var(--mono);padding:6px 12px 12px}
+  .drawer .list div{color:#9aa4b6;word-break:break-all}
+  .drawer .list .k{color:var(--accent)} .drawer .list .bad{color:var(--bad)}
+  .hidden{display:none!important}
+  .toast{position:fixed;left:50%;top:66px;transform:translateX(-50%);padding:9px 18px;border-radius:8px;
+    font-size:12.5px;font-weight:600;z-index:50;opacity:0;transition:.2s;pointer-events:none}
+  .toast.show{opacity:1}
+  .toast.ok{background:rgba(62,207,142,.15);color:var(--ok);border:1px solid rgba(62,207,142,.4)}
+  .toast.bad{background:rgba(242,99,95,.15);color:var(--bad);border:1px solid rgba(242,99,95,.4)}
+  @media(max-width:1080px){.main{grid-template-columns:170px 1fr 290px}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand"><span class="dot" id="liveDot"></span>{{TITLE}}</div>
+  <div class="stats">
+    <span class="chip">协议 <b id="sProto">0</b></span>
+    <span class="chip">客户端 <b id="sClient">0</b></span>
+    <span class="chip">服务端 <b id="sServer">0</b></span>
+    <span class="chip">就绪 <b id="sReady">0</b></span>
+    <span class="chip">会话 <b id="sSess">0</b></span>
+    <span class="chip">rev <b id="sRev">0</b></span>
+  </div>
+  <div class="spacer"></div>
+  <button class="ghost" id="btnEvents">事件</button>
+  <button class="ghost" id="btnValidate">校验</button>
+  <button class="primary" id="btnApply">保存并应用</button>
+</div>
+
+<div class="main">
+  <aside class="side">
+    <div class="side-title">组件</div>
+    <div class="palette">
+      <div class="source" draggable="true" data-kind="Protocol">
+        <div class="ic">P</div>
+        <div><div class="t">协议</div><div class="d">定义帧格式</div></div>
+      </div>
+      <div class="source" draggable="true" data-kind="Client">
+        <div class="ic">C</div>
+        <div><div class="t">客户端</div><div class="d">主动拨号</div></div>
+      </div>
+      <div class="source" draggable="true" data-kind="Server">
+        <div class="ic">S</div>
+        <div><div class="t">服务端</div><div class="d">监听接入</div></div>
+      </div>
+    </div>
+    <div class="side-title">操作</div>
+    <div class="palette">
+      <button class="ghost" id="btnFit" style="width:100%">适应画布</button>
+      <button class="ghost" id="btnClear" style="width:100%">清空画布</button>
+    </div>
+  </aside>
+
+  <div class="canvas-wrap" id="canvasWrap">
+    <svg class="wires" id="wires"></svg>
+    <div class="canvas" id="canvas"></div>
+    <div class="drawer" id="drawer">
+      <h4><span>事件流</span><span id="drawerClose" style="cursor:pointer">✕</span></h4>
+      <div class="list" id="eventList">（暂无）</div>
+    </div>
+  </div>
+
+  <aside class="side right">
+    <div class="side-title">属性</div>
+    <div class="props" id="props">
+      <div class="empty">选中一个节点以编辑<br>或从左侧拖入组件</div>
+    </div>
+  </aside>
+</div>
+
+<div class="statusbar">
+  <span class="msg" id="msg">就绪</span>
+  <span id="zoomLabel">100%</span>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+// ---------------- 状态 ----------------
+const state = {
+  nodes: [],           // GraphNode[]
+  edges: [],           // GraphEdge[]
+  protocols: [],       // ProtocolOption[]
+  selected: null,      // nodeId
+  linking: null,       // {from, x, y}
+  status: null,
+  errIds: new Set(),   // 校验失败的节点 id，随 renderNodes 重建而保留
+  seq: 1,
+  zoom: 1
+};
+
+const $ = id => document.getElementById(id);
+const canvas = $('canvas');
+const wires = $('wires');
+const wrap = $('canvasWrap');
+
+// ---------------- 工具 ----------------
+function uid(prefix){ return prefix + '-' + (state.seq++) + '-' + Math.random().toString(36).slice(2,6); }
+function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function toast(text, kind){
+  const t = $('toast');
+  t.textContent = text; t.className = 'toast show ' + (kind || 'ok');
+  clearTimeout(t._h); t._h = setTimeout(()=>{ t.className='toast'; }, 2600);
+}
+function setMsg(text, kind){
+  const m = $('msg'); m.textContent = text;
+  m.className = 'msg' + (kind ? ' ' + kind : '');
+}
+async function api(path, body){
+  const opt = body === undefined ? {} : {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+  };
+  const res = await fetch(path, opt);
+  const json = await res.json();
+  if(!json.ok) throw new Error(json.error || '请求失败');
+  return json.data;
+}
+
+// ---------------- 节点渲染 ----------------
+const KIND_META = {
+  Protocol: { letter:'P', defaultLabel:'协议', color:'var(--proto)' },
+  Client:   { letter:'C', defaultLabel:'客户端', color:'var(--client)' },
+  Server:   { letter:'S', defaultLabel:'服务端', color:'var(--server)' }
+};
+
+function nodeStatus(id){
+  if(!state.status || !state.status.nodes) return null;
+  return state.status.nodes.find(n => n.id === id) || null;
+}
+
+function nodeSummary(n){
+  if(n.kind === 'Protocol'){
+    const p = state.protocols.find(x => x.kindId === n.kindId);
+    const name = p ? p.displayName : (n.kindId || '未选择');
+    const kv = Object.entries(n.settings || {}).filter(([,v]) => v).map(([k,v]) => `${k}=${v}`).join(' ');
+    return `<div class="kv"><span>种类</span><span>${esc(name)}</span></div>` +
+           (kv ? `<div class="kv"><span>参数</span><span>${esc(kv)}</span></div>` : '');
+  }
+  if(n.kind === 'Client'){
+    const eps = (n.endpoints || []).join(', ') || '未配置';
+    const st = nodeStatus(n.id);
+    const badge = st ? `<span class="badge ${st.state==='Ready'?'ok':st.state==='Absent'?'bad':'warn'}">${esc(st.state)}</span>` : '<span class="badge">未应用</span>';
+    return `<div class="kv"><span>端点</span><span>${esc(eps)}</span></div>` +
+           `<div class="kv" style="margin-top:4px"><span>状态</span>${badge}</div>`;
+  }
+  const st = nodeStatus(n.id);
+  const port = st && st.port > 0 ? st.port : n.port;
+  const sessions = st ? st.sessions : 0;
+  return `<div class="kv"><span>监听</span><span>${esc(n.host||'0.0.0.0')}:${esc(port)}</span></div>` +
+         `<div class="kv" style="margin-top:4px"><span>会话</span><span>${sessions}</span></div>`;
+}
+
+function renderNodes(){
+  canvas.innerHTML = state.nodes.map(n => {
+    const meta = KIND_META[n.kind];
+    const sel = state.selected === n.id ? ' sel' : '';
+    const err = state.errIds.has(n.id) ? ' err' : '';
+    const ports = n.kind === 'Protocol'
+      ? '<div class="port out" data-port="out" data-node="' + n.id + '"></div>'
+      : '<div class="port in" data-port="in" data-node="' + n.id + '"></div>';
+    return `<div class="node${sel}${err}" data-kind="${n.kind}" data-id="${n.id}"
+                 style="left:${n.x}px;top:${n.y}px">
+      <div class="node-head"><div class="ic">${meta.letter}</div>
+        <div class="nm">${esc(n.label || meta.defaultLabel)}</div></div>
+      <div class="node-body">${nodeSummary(n)}</div>
+      ${ports}
+    </div>`;
+  }).join('');
+  markLinkedPorts();
+  drawWires();
+}
+
+function markLinkedPorts(){
+  const linked = new Set();
+  state.edges.forEach(e => { linked.add(e.from); linked.add(e.to); });
+  canvas.querySelectorAll('.port').forEach(p => {
+    if(linked.has(p.dataset.node)) p.classList.add('linked');
+  });
+}
+
+// ---------------- 连线 ----------------
+function portPos(nodeId, which){
+  const el = canvas.querySelector(`.node[data-id="${nodeId}"]`);
+  if(!el) return null;
+  const r = el.getBoundingClientRect();
+  const wr = wrap.getBoundingClientRect();
+  return {
+    x: r.left - wr.left + (which === 'out' ? r.width : 0),
+    y: r.top - wr.top + r.height / 2
+  };
+}
+
+function drawWires(){
+  let html = '';
+  const defs = `<defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#8b6ce8"/><stop offset="100%" stop-color="#4c8dff"/>
+    </linearGradient></defs>`;
+  state.edges.forEach(e => {
+    const a = portPos(e.from, 'out'), b = portPos(e.to, 'in');
+    if(!a || !b) return;
+    const dx = Math.max(46, Math.abs(b.x - a.x) * 0.5);
+    const d = `M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${b.x-dx} ${b.y}, ${b.x} ${b.y}`;
+    html += `<path d="${d}" stroke="url(#g)" stroke-width="2" fill="none" opacity=".85"/>`;
+    // 删除热区
+    html += `<path d="${d}" stroke="transparent" stroke-width="14" fill="none"
+              style="pointer-events:stroke;cursor:pointer" data-edge="${e.id}"/>`;
+  });
+  if(state.linking){
+    const a = portPos(state.linking.from, 'out');
+    if(a){
+      const dx = Math.max(46, Math.abs(state.linking.x - a.x) * 0.5);
+      html += `<path d="M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${state.linking.x-dx} ${state.linking.y}, ${state.linking.x} ${state.linking.y}"
+                stroke="var(--accent)" stroke-width="2" stroke-dasharray="5 4" fill="none"/>`;
+    }
+  }
+  wires.innerHTML = defs + html;
+}
+
+// ---------------- 拖拽新增 ----------------
+document.querySelectorAll('.source').forEach(src => {
+  src.addEventListener('dragstart', ev => {
+    ev.dataTransfer.setData('text/plain', src.dataset.kind);
+    ev.dataTransfer.effectAllowed = 'copy';
+  });
+});
+wrap.addEventListener('dragover', ev => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; });
+wrap.addEventListener('drop', ev => {
+  ev.preventDefault();
+  const kind = ev.dataTransfer.getData('text/plain');
+  if(!KIND_META[kind]) return;
+  const r = wrap.getBoundingClientRect();
+  addNode(kind, ev.clientX - r.left - 95, ev.clientY - r.top - 40);
+});
+
+function addNode(kind, x, y){
+  const meta = KIND_META[kind];
+  const node = {
+    id: uid(kind.toLowerCase()),
+    kind,
+    label: meta.defaultLabel + ' ' + (state.nodes.filter(n => n.kind === kind).length + 1),
+    x: Math.max(8, Math.round(x)), y: Math.max(8, Math.round(y)),
+    kindId: kind === 'Protocol' ? (state.protocols[0] ? state.protocols[0].kindId : null) : null,
+    settings: kind === 'Protocol' ? defaultSettings(state.protocols[0]) : null,
+    deviceId: null,
+    endpoints: kind === 'Client' ? ['127.0.0.1:502'] : null,
+    retryInitialMs: 500, retryMaxMs: 30000, connectTimeoutMs: 3000,
+    listenerId: null, host: '0.0.0.0', port: kind === 'Server' ? 0 : 0, maxSessions: 64,
+    heartbeatEnabled: false, heartbeatIntervalMs: 5000, heartbeatMisses: 3
+  };
+  state.nodes.push(node);
+  state.selected = node.id;
+  renderNodes(); renderProps();
+  setMsg('已添加 ' + meta.defaultLabel);
+}
+
+function defaultSettings(protocol){
+  if(!protocol) return {};
+  const out = {};
+  (protocol.fields || []).forEach(f => { out[f.key] = f.defaultValue ?? ''; });
+  return out;
+}
+
+// ---------------- 节点拖动 & 选中 & 连线 ----------------
+let drag = null;
+
+canvas.addEventListener('pointerdown', ev => {
+  const port = ev.target.closest('.port');
+  if(port){
+    ev.preventDefault(); ev.stopPropagation();
+    const nodeId = port.dataset.node;
+    const node = state.nodes.find(n => n.id === nodeId);
+    if(node && node.kind === 'Protocol'){
+      const wr = wrap.getBoundingClientRect();
+      state.linking = { from: nodeId, x: ev.clientX - wr.left, y: ev.clientY - wr.top };
+      drawWires();
+    }
+    return;
+  }
+
+  const nodeEl = ev.target.closest('.node');
+  if(nodeEl){
+    const id = nodeEl.dataset.id;
+    state.selected = id;
+    renderProps();
+    canvas.querySelectorAll('.node').forEach(n => n.classList.toggle('sel', n.dataset.id === id));
+
+    const node = state.nodes.find(n => n.id === id);
+    const wr = wrap.getBoundingClientRect();
+    drag = { id, startX: ev.clientX, startY: ev.clientY, ox: node.x, oy: node.y, moved: false };
+    nodeEl.classList.add('dragging');
+    nodeEl.setPointerCapture(ev.pointerId);
+    return;
+  }
+
+  // 点空白：取消选择
+  if(!ev.target.closest('.drawer')){
+    state.selected = null;
+    renderNodes(); renderProps();
+  }
+});
+
+canvas.addEventListener('pointermove', ev => {
+  if(state.linking){
+    const wr = wrap.getBoundingClientRect();
+    state.linking.x = ev.clientX - wr.left;
+    state.linking.y = ev.clientY - wr.top;
+    drawWires();
+    return;
+  }
+  if(!drag) return;
+  const dx = ev.clientX - drag.startX, dy = ev.clientY - drag.startY;
+  if(Math.abs(dx) > 2 || Math.abs(dy) > 2) drag.moved = true;
+  const node = state.nodes.find(n => n.id === drag.id);
+  node.x = Math.max(0, drag.ox + dx);
+  node.y = Math.max(0, drag.oy + dy);
+  const el = canvas.querySelector(`.node[data-id="${drag.id}"]`);
+  if(el){ el.style.left = node.x + 'px'; el.style.top = node.y + 'px'; }
+  drawWires();
+});
+
+canvas.addEventListener('pointerup', ev => {
+  if(state.linking){
+    const target = document.elementFromPoint(ev.clientX, ev.clientY);
+    const nodeEl = target && target.closest ? target.closest('.node') : null;
+    if(nodeEl){
+      const toId = nodeEl.dataset.id;
+      const to = state.nodes.find(n => n.id === toId);
+      if(to && to.kind !== 'Protocol'){
+        connect(state.linking.from, toId);
+      }
+    }
+    state.linking = null;
+    drawWires();
+    return;
+  }
+  if(drag){
+    const el = canvas.querySelector(`.node[data-id="${drag.id}"]`);
+    if(el) el.classList.remove('dragging');
+    drag = null;
+  }
+});
+
+function connect(fromId, toId){
+  // 一个客户端/服务端只绑定一个协议：新连线替换旧连线
+  state.edges = state.edges.filter(e => e.to !== toId);
+  state.edges.push({ id: uid('e'), from: fromId, to: toId });
+  const proto = state.nodes.find(n => n.id === fromId);
+  const target = state.nodes.find(n => n.id === toId);
+  if(proto && target){
+    setMsg(`已连接 ${proto.label} → ${target.label}`);
+  }
+  renderNodes();
+}
+
+// 点击连线删除
+wires.addEventListener('click', ev => {
+  const edgeId = ev.target.dataset && ev.target.dataset.edge;
+  if(!edgeId) return;
+  if(!confirm('删除这条连线？')) return;
+  state.edges = state.edges.filter(e => e.id !== edgeId);
+  renderNodes();
+  setMsg('已删除连线');
+});
+
+// ---------------- 属性面板 ----------------
+function renderProps(){
+  const box = $('props');
+  const node = state.nodes.find(n => n.id === state.selected);
+  if(!node){
+    box.innerHTML = '<div class="empty">选中一个节点以编辑<br>或从左侧拖入组件</div>';
+    return;
+  }
+
+  let html = `<div class="field"><label>显示名</label>
+      <input id="p-label" value="${esc(node.label)}"></div>`;
+
+  if(node.kind === 'Protocol'){
+    html += `<div class="field"><label>协议种类</label>
+      <select id="p-kind">${state.protocols.map(p =>
+        `<option value="${esc(p.kindId)}" ${p.kindId===node.kindId?'selected':''}>${esc(p.displayName)}</option>`
+      ).join('')}</select></div>`;
+    const proto = state.protocols.find(p => p.kindId === node.kindId);
+    if(proto && proto.description){
+      html += `<div class="field"><div class="hint">${esc(proto.description)}</div></div>`;
+    }
+    (proto ? proto.fields : []).forEach(f => {
+      const v = (node.settings && node.settings[f.key]) ?? f.defaultValue ?? '';
+      html += `<div class="field"><label>${esc(f.label)}</label>
+        <input id="p-set-${esc(f.key)}" data-key="${esc(f.key)}" value="${esc(v)}" placeholder="${esc(f.placeholder||'')}">
+        <div class="hint">${esc(f.help||'')}</div></div>`;
+    });
+  }
+
+  if(node.kind === 'Client'){
+    html += `<div class="field"><label>设备标识（留空用节点 Id）</label>
+        <input id="p-deviceId" value="${esc(node.deviceId||'')}" placeholder="${esc(node.id)}"></div>
+      <div class="field"><label>端点（每行一个 host:port）</label>
+        <textarea id="p-endpoints" rows="3">${esc((node.endpoints||[]).join('\n'))}</textarea>
+        <div class="hint">例：127.0.0.1:502</div></div>
+      <div class="field-row">
+        <div class="field"><label>初始退避 ms</label><input id="p-retryInitialMs" type="number" value="${node.retryInitialMs}"></div>
+        <div class="field"><label>退避上限 ms</label><input id="p-retryMaxMs" type="number" value="${node.retryMaxMs}"></div>
+      </div>
+      <div class="field"><label>拨号超时 ms</label><input id="p-connectTimeoutMs" type="number" value="${node.connectTimeoutMs}"></div>`;
+  }
+
+  if(node.kind === 'Server'){
+    html += `<div class="field"><label>监听标识（留空用节点 Id）</label>
+        <input id="p-listenerId" value="${esc(node.listenerId||'')}" placeholder="${esc(node.id)}"></div>
+      <div class="field-row">
+        <div class="field"><label>地址</label><input id="p-host" value="${esc(node.host||'0.0.0.0')}"></div>
+        <div class="field"><label>端口（0=自动）</label><input id="p-port" type="number" value="${node.port}"></div>
+      </div>
+      <div class="field"><label>最大会话</label><input id="p-maxSessions" type="number" value="${node.maxSessions}"></div>`;
+  }
+
+  if(node.kind === 'Client' || node.kind === 'Server'){
+    html += `<div class="field"><label>应用层心跳</label>
+      <select id="p-heartbeatEnabled">
+        <option value="false" ${!node.heartbeatEnabled?'selected':''}>关闭</option>
+        <option value="true" ${node.heartbeatEnabled?'selected':''}>开启</option>
+      </select>
+      <div class="hint">协议未实现心跳时库会显式报错，不会静默假装开启</div></div>`;
+  }
+
+  html += `<div class="field"><button class="ghost danger" id="p-delete" style="width:100%">删除该节点</button></div>`;
+  box.innerHTML = html;
+
+  const bind = (id, fn, ev) => {
+    const el = $(id);
+    if(el) el.addEventListener(ev || 'input', fn);
+  };
+  bind('p-label', ev => { node.label = ev.target.value; state.errIds.delete(node.id); renderNodes(); });
+  bind('p-kind', ev => {
+    node.kindId = ev.target.value;
+    const proto = state.protocols.find(p => p.kindId === node.kindId);
+    node.settings = defaultSettings(proto);
+    renderProps(); renderNodes();
+  }, 'change');
+  (node.settings ? Object.keys(node.settings) : []).forEach(k => {
+    bind('p-set-' + k, ev => { node.settings[k] = ev.target.value; renderNodes(); });
+  });
+  bind('p-deviceId', ev => { node.deviceId = ev.target.value || null; });
+  bind('p-endpoints', ev => { node.endpoints = ev.target.value.split('\n').map(s=>s.trim()).filter(Boolean); renderNodes(); });
+  bind('p-retryInitialMs', ev => { node.retryInitialMs = +ev.target.value; });
+  bind('p-retryMaxMs', ev => { node.retryMaxMs = +ev.target.value; });
+  bind('p-connectTimeoutMs', ev => { node.connectTimeoutMs = +ev.target.value; });
+  bind('p-listenerId', ev => { node.listenerId = ev.target.value || null; });
+  bind('p-host', ev => { node.host = ev.target.value; renderNodes(); });
+  bind('p-port', ev => { node.port = +ev.target.value; renderNodes(); });
+  bind('p-maxSessions', ev => { node.maxSessions = +ev.target.value; });
+  bind('p-heartbeatEnabled', ev => { node.heartbeatEnabled = ev.target.value === 'true'; }, 'change');
+  const del = $('p-delete');
+  if(del) del.onclick = () => deleteNode(node.id);
+}
+
+function deleteNode(id){
+  state.nodes = state.nodes.filter(n => n.id !== id);
+  state.edges = state.edges.filter(e => e.from !== id && e.to !== id);
+  if(state.selected === id) state.selected = null;
+  renderNodes(); renderProps();
+  setMsg('已删除节点');
+}
+
+// ---------------- 与后端交互 ----------------
+function buildGraph(){
+  return {
+    revision: state.status ? state.status.revision : 0,
+    nodes: state.nodes.map(n => ({ ...n, kind: n.kind })),
+    edges: state.edges.map(e => ({ id: e.id, from: e.from, to: e.to }))
+  };
+}
+
+/**
+ * 记录校验失败节点。写进 state.errIds 而非直接改 DOM，
+ * 否则每 1.8s 的 refresh 重建节点后，红色高亮会被冲掉。
+ */
+function applyIssues(issues){
+  state.errIds = new Set((issues || []).filter(i => i && i.nodeId).map(i => i.nodeId));
+  renderNodes();
+}
+
+$('btnValidate').onclick = async () => {
+  try{
+    setMsg('校验中…');
+    const r = await api('/api/validate', buildGraph());
+    applyIssues(r.issues);
+    if(r.ok){
+      setMsg('校验通过，可以应用', 'ok');
+      toast('校验通过', 'ok');
+    } else {
+      setMsg('校验失败：' + r.issues.map(i=>i.message).join('；'), 'bad');
+      toast('校验未通过', 'bad');
+    }
+  }catch(e){ setMsg('校验异常：' + e.message, 'bad'); }
+};
+
+$('btnApply').onclick = async () => {
+  const btn = $('btnApply');
+  btn.disabled = true; btn.textContent = '应用中…';
+  try{
+    const r = await api('/api/apply', buildGraph());
+    applyIssues(r.issues);
+    if(r.ok){
+      setMsg(`已应用 rev=${r.revision}（新增 ${r.added} / 更新 ${r.updated} / 删除 ${r.removed} / 未变 ${r.unchanged}）`, 'ok');
+      toast('已应用，无需重启服务', 'ok');
+      await refresh();
+    } else {
+      setMsg('应用失败：' + r.issues.map(i=>i.message).join('；'), 'bad');
+      toast('应用失败', 'bad');
+    }
+  }catch(e){
+    setMsg('应用异常：' + e.message, 'bad');
+    toast('应用异常', 'bad');
+  }finally{
+    btn.disabled = false; btn.textContent = '保存并应用';
+  }
+};
+
+$('btnEvents').onclick = () => $('drawer').classList.toggle('open');
+$('drawerClose').onclick = () => $('drawer').classList.remove('open');
+$('btnClear').onclick = () => {
+  if(!confirm('清空画布？（不会立即影响运行中的服务，需再点应用）')) return;
+  state.nodes = []; state.edges = []; state.selected = null;
+  renderNodes(); renderProps(); setMsg('画布已清空');
+};
+$('btnFit').onclick = () => {
+  if(!state.nodes.length) return;
+  const minX = Math.min(...state.nodes.map(n=>n.x));
+  const minY = Math.min(...state.nodes.map(n=>n.y));
+  state.nodes.forEach(n => { n.x -= minX - 30; n.y -= minY - 30; });
+  renderNodes(); setMsg('已适应画布');
+};
+
+async function refresh(){
+  try{
+    const s = await api('/api/state');
+    state.status = s;
+    $('liveDot').className = 'dot' + (s.running ? '' : ' off');
+    $('sProto').textContent = state.nodes.filter(n=>n.kind==='Protocol').length;
+    $('sClient').textContent = s.clientCount;
+    $('sServer').textContent = s.serverCount;
+    $('sReady').textContent = s.readyClients;
+    $('sSess').textContent = s.inboundSessions;
+    $('sRev').textContent = s.revision;
+    renderNodes();
+    renderEventList(s.events || []);
+  }catch(e){ /* 轮询失败不打断操作 */ }
+}
+
+function renderEventList(events){
+  const box = $('eventList');
+  if(!events.length){ box.textContent = '（暂无事件）'; return; }
+  box.innerHTML = events.slice(-80).map(e => {
+    const bad = ['Faulted','HandshakeFailed','HeartbeatTimeout','ProtocolFault'].includes(e.kind);
+    return `<div><span class="${bad?'bad':'k'}">${esc(e.kind)}</span> ${esc(e.direction)} ${esc(e.target||'-')}`
+      + (e.detail ? ` · ${esc(e.detail)}` : '') + `</div>`;
+  }).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+// ---------------- 初始化 ----------------
+async function loadProtocols(){
+  state.protocols = await api('/api/protocols');
+}
+
+/** 若后端已有图，载入画布；否则给一个能直接跑通的示例。 */
+async function loadInitial(){
+  try{
+    const g = await api('/api/graph');
+    if(g && g.nodes && g.nodes.length){
+      state.nodes = g.nodes;
+      state.edges = g.edges || [];
+      state.seq = state.nodes.length + 1;
+      state.selected = null;
+      renderNodes(); renderProps();
+      setMsg('已载入已保存的编排图（rev ' + g.revision + '）');
+      return;
+    }
+  }catch(e){ /* 首次为空 */ }
+
+  // 示例：协议 → 客户端 + 服务端
+  const proto = state.protocols[0];
+  if(!proto) return;
+  const p = { id: uid('protocol'), kind:'Protocol', label:'协议 ' + proto.displayName,
+    x: 60, y: 150, kindId: proto.kindId, settings: defaultSettings(proto) };
+  const c = { id: uid('client'), kind:'Client', label:'客户端 1', x: 340, y: 60,
+    deviceId: null, endpoints:['127.0.0.1:9000'], retryInitialMs:500, retryMaxMs:30000,
+    connectTimeoutMs:3000, heartbeatEnabled:false, heartbeatIntervalMs:5000, heartbeatMisses:3 };
+  const s = { id: uid('server'), kind:'Server', label:'服务端 1', x: 340, y: 240,
+    listenerId: null, host:'127.0.0.1', port:9000, maxSessions:64,
+    heartbeatEnabled:false, heartbeatIntervalMs:5000, heartbeatMisses:3 };
+  state.nodes = [p, c, s];
+  state.edges = [
+    { id: uid('e'), from: p.id, to: c.id },
+    { id: uid('e'), from: p.id, to: s.id }
+  ];
+  renderNodes(); renderProps();
+  setMsg('已载入示例编排，点击「保存并应用」即可生效');
+}
+
+(async () => {
+  await loadProtocols();
+  await loadInitial();
+  await refresh();
+  setInterval(refresh, 1800);
+  window.addEventListener('resize', drawWires);
+})();
+</script>
+</body>
+</html>

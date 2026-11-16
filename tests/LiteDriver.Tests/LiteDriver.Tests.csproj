@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/LiteDriver/LiteDriver.csproj" />
     <ProjectReference Include="../../samples/LiteDriver.SampleHost/LiteDriver.SampleHost.csproj" />
+    <ProjectReference Include="../../src/LiteDriver.Orchestration/LiteDriver.Orchestration.csproj" />
   </ItemGroup>
 
   <ItemGroup>

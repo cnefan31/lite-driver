@@ -191,6 +191,22 @@ builder.RegisterKind("stx-etx", ctx => new DelimitedKind(ctx), DelimitedKind.Val
 
 - [samples/LiteDriver.SampleHost](./samples/LiteDriver.SampleHost) —— 通用主机 + 本地模拟设备，演示建连、交换、断链重连、运行期增删改与优雅停机
 - [samples/LiteDriver.TestBench](./samples/LiteDriver.TestBench) —— **可视化测试台**：同屏运行客户端驱动与服务端驱动，两者互连做连通测试，可切换协议快速验证自定义帧格式
+- [samples/LiteDriver.Orchestration.Sample](./samples/LiteDriver.Orchestration.Sample) —— **功能编排**宿主样例：拖拽编排客户端/服务端/协议并热应用
+
+### 可视化功能编排
+
+独立库 `LiteDriver.Orchestration`（基于 [NanoServer](https://www.nuget.org/packages/NanoServer)），依赖 `LiteDriver` 与 `LiteDriver.Hosting`：
+
+```bash
+dotnet run --project samples/LiteDriver.Orchestration.Sample -- --port 8099
+# 打开 http://127.0.0.1:8099/
+```
+
+在页面上拖拽「协议 / 客户端 / 服务端」节点、连线、改参数，点「保存并应用」即热生效，**后端无需重启**。
+
+- 校验失败会定位到具体节点并标红
+- 应用返回新增/更新/删除/未变 计数；失败保留上一次成功的配置
+- `Port=0` 时自动把系统分配的实际端口回写进图，避免端口漂移
 
 ### 可视化测试台
 

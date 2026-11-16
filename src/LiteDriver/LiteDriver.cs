@@ -140,8 +140,10 @@ public sealed class LiteDriver : IAsyncDisposable, IDisposable
             {
                 foreach (var listener in next.Listeners)
                 {
+                    // 复用条件只看「配置是否等价」，不看代是否相邻：
+                    // revision 每次应用都会递增，若要求 Generation == 相邻代，
+                    // 第二次及以后的应用会永远重建监听，Port=0 时端口还会漂移。
                     if (_listeners.TryGetValue(listener.ListenerId, out var existing) &&
-                        existing.Generation == nextGeneration - 1 &&
                         SameListener(existing, listener))
                     {
                         reusedListeners.Add(existing);

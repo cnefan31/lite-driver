@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>LiteDriver.Orchestration.AotSmoke</AssemblyName>
+    <RootNamespace>LiteDriver.Orchestration.AotSmoke</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeFrameworkVersion>10.0.14</RuntimeFrameworkVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <TrimmerRootAssembly Include="LiteDriver" />
+    <TrimmerRootAssembly Include="LiteDriver.Orchestration" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/LiteDriver.Orchestration/LiteDriver.Orchestration.csproj" />
+  </ItemGroup>
+
+</Project>
