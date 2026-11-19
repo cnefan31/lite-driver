@@ -5,7 +5,7 @@ import sys
 import time
 import urllib.request
 
-BASE = "http://127.0.0.1:8110"
+BASE = "http://127.0.0.1:8111"
 
 
 def call(path, payload=None):
@@ -30,23 +30,52 @@ def fail(msg):
 def main():
     failures = 0
 
-    # 1) 协议目录
-    protocols = call("/api/protocols")
-    print(f"协议目录 {len(protocols)} 项: {[p['kindId'] for p in protocols]}")
-    if len(protocols) < 4:
-        failures += fail("协议数量不足")
+    # 1) 节点类型目录（应含 7 种内置类型）
+    types = call("/api/nodetypes")
+    ids = [t["typeId"] for t in types]
+    print(f"节点类型 {len(types)} 种: {ids}")
+    for need in ("protocol", "client", "server", "codec", "transform", "handler", "sink"):
+        if need not in ids:
+            failures += fail(f"缺少节点类型 {need}")
 
-    # 2) 首次应用（服务端 Port=0）
+    # 2) 端口类型约束：客户端不能直连处理器
+    bad = call("/api/connectable", {
+        "fromNodeType": "client", "fromPort": "in",
+        "toNodeType": "handler", "toPort": "in"})
+    if bad["ok"]:
+        failures += fail("客户端直连处理器未被拒绝")
+    else:
+        print(f"  客户端→处理器 被拒: {bad['reason']}")
+
+    ok = call("/api/connectable", {
+        "fromNodeType": "client", "fromPort": "in",
+        "toNodeType": "codec", "toPort": "in"})
+    if not ok["ok"]:
+        failures += fail("客户端→编解码器 被误拒")
+    else:
+        print("  客户端→编解码器 允许")
+
+    # 3) 首次应用：完整链路（客户端→编解码→处理器；服务端 Port=0）
     graph = {
         "revision": 0,
         "nodes": [
-            {"id": "p", "kind": "Protocol", "label": "协议", "x": 60, "y": 150, "kindId": "length-prefix"},
-            {"id": "srv", "kind": "Server", "label": "服务端", "x": 340, "y": 240,
-             "host": "127.0.0.1", "port": 0, "maxSessions": 8},
-            {"id": "cli", "kind": "Client", "label": "客户端", "x": 340, "y": 60,
-             "endpoints": ["127.0.0.1:1"]},
+            {"id": "p", "nodeType": "protocol", "label": "协议", "x": 40, "y": 210,
+             "settings": {"kindId": "length-prefix"}},
+            {"id": "srv", "nodeType": "server", "label": "服务端", "x": 270, "y": 340,
+             "settings": {"host": "127.0.0.1", "port": "0", "maxSessions": "8"}},
+            {"id": "cli", "nodeType": "client", "label": "客户端", "x": 270, "y": 90,
+             "settings": {"endpoints": "127.0.0.1:1"}},
+            {"id": "k", "nodeType": "codec", "label": "编解码器", "x": 500, "y": 90,
+             "settings": {"codecId": "text"}},
+            {"id": "h", "nodeType": "handler", "label": "处理器", "x": 730, "y": 90,
+             "settings": {"handlerId": "log", "mode": "log"}},
         ],
-        "edges": [{"id": "e1", "from": "p", "to": "srv"}, {"id": "e2", "from": "p", "to": "cli"}],
+        "edges": [
+            {"id": "e1", "from": "p", "fromPort": "out", "to": "srv", "toPort": "codec"},
+            {"id": "e2", "from": "p", "fromPort": "out", "to": "cli", "toPort": "codec"},
+            {"id": "e3", "from": "cli", "fromPort": "in", "to": "k", "toPort": "in"},
+            {"id": "e4", "from": "k", "fromPort": "out", "to": "h", "toPort": "in"},
+        ],
     }
     r1 = call("/api/apply", graph)
     if not r1["ok"]:
@@ -55,24 +84,25 @@ def main():
         return failures
 
     time.sleep(2)
-    port = [n for n in call("/api/graph")["nodes"] if n["kind"] == "Server"][0]["port"]
+    port = int([n for n in call("/api/graph")["nodes"] if n["nodeType"] == "server"][0]["settings"]["port"])
     print(f"  服务端实际端口={port}（已回写进图）")
     if port <= 0:
         failures += fail("端口未回写")
 
-    # 3) 校验：未连协议的节点必须被拒
+    # 4) 校验：客户端直连处理器必须被拒，且定位到节点
     bad = json.loads(json.dumps(graph))
-    bad["nodes"].append({"id": "orphan", "kind": "Server", "label": "孤立", "host": "127.0.0.1", "port": 0})
+    bad["edges"] = [e for e in bad["edges"] if e["id"] != "e3"]
+    bad["edges"].append({"id": "eBad", "from": "cli", "fromPort": "in", "to": "h", "toPort": "in"})
     v = call("/api/validate", bad)
     if v["ok"]:
         failures += fail("孤立服务端节点未被拒绝")
     else:
-        assert any(i.get("nodeId") == "orphan" for i in v["issues"]), "问题未定位到节点"
+        assert any(i.get("code") == "edge_type_mismatch" for i in v["issues"]), "未报类型不匹配"
         print(f"  校验拒绝且定位到节点: {v['issues'][0]['code']}")
 
-    # 4) 热更新客户端指向真实端口 -> 应连通
-    graph["nodes"][1]["port"] = port
-    graph["nodes"][2]["endpoints"] = [f"127.0.0.1:{port}"]
+    # 5) 热更新客户端指向真实端口 -> 应连通
+    graph["nodes"][1]["settings"]["port"] = str(port)
+    graph["nodes"][2]["settings"]["endpoints"] = f"127.0.0.1:{port}"
     r2 = call("/api/apply", graph)
     if not r2["ok"]:
         failures += fail(f"热更新失败: {r2['issues']}")
@@ -84,30 +114,31 @@ def main():
     if st["inboundSessions"] < 1:
         failures += fail("服务端未收到会话")
 
-    # 5) 运行期新增服务端节点，进程不重启
-    graph["nodes"].append({"id": "srv2", "kind": "Server", "label": "服务端2",
-                           "host": "127.0.0.1", "port": 0, "maxSessions": 4})
-    graph["edges"].append({"id": "e3", "from": "p", "to": "srv2"})
+    # 6) 运行期新增服务端节点（不重启），必须经编解码器才合法
+    graph["nodes"].append({"id": "srv2", "nodeType": "server", "label": "服务端2",
+                           "settings": {"host": "127.0.0.1", "port": "0", "maxSessions": "4"}})
+    graph["edges"].append({"id": "e5", "from": "p", "fromPort": "out", "to": "srv2", "toPort": "codec"})
     r3 = call("/api/apply", graph)
     if not r3["ok"]:
         failures += fail(f"新增节点失败: {r3['issues']}")
     time.sleep(2)
     st2 = call("/api/state")
-    listening = [n for n in st2["nodes"] if n["kind"] == "Server" and n["port"] > 0]
+    listening = [n for n in st2["nodes"] if n["kind"] == "server" and n["port"] > 0]
+    listening.sort(key=lambda n: n["port"])
     print(f"  监听端点数={len(listening)} ports={[n['port'] for n in listening]}")
     if len(listening) < 2:
         failures += fail("新增的服务端未监听")
     # 原服务端端口不应漂移
-    if listening[0]["port"] != port:
-        failures += fail(f"原服务端端口漂移 {port} -> {listening[0]['port']}")
+    if port not in [n["port"] for n in listening]:
+        failures += fail(f"原服务端端口漂移，期望仍含 {port}，实际 {[n['port'] for n in listening]}")
 
-    # 6) 删除第二个服务端
+    # 7) 删除第二个服务端
     graph["nodes"] = [n for n in graph["nodes"] if n["id"] != "srv2"]
     graph["edges"] = [e for e in graph["edges"] if e["to"] != "srv2"]
     r4 = call("/api/apply", graph)
     time.sleep(2)
     st3 = call("/api/state")
-    remaining = [n for n in st3["nodes"] if n["kind"] == "Server"]
+    remaining = [n for n in st3["nodes"] if n["kind"] == "server"]
     print(f"  删除后监听端点数={len(remaining)}")
     if len(remaining) != 1:
         failures += fail("删除节点后监听数不正确")

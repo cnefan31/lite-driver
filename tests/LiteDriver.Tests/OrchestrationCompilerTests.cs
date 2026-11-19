@@ -3,93 +3,260 @@ using Xunit;
 
 namespace LiteDriver.Tests;
 
-/// <summary>编排图编译器的校验与映射行为。</summary>
+/// <summary>编排图编译：端口类型约束、必连端口、环路、配置生成与旧图迁移。</summary>
 public sealed class OrchestrationCompilerTests
 {
-    private static readonly string[] Kinds = ["length-prefix", "line-terminator", "stx-etx"];
+    private static readonly string[] Kinds = ["length-prefix", "stx-etx"];
+    private static readonly string[] Codecs = ["text"];
+    private static readonly NodeTypeCatalog Types = GraphCompiler.DefaultNodeTypes();
 
-    private static GraphNode Proto(string id, string kind = "length-prefix") =>
-        new() { Id = id, Kind = NodeKind.Protocol, Label = id, KindId = kind };
-
-    private static GraphNode Client(string id, params string[] endpoints) => new()
+    private static GraphNode Node(string id, string type, params (string key, string value)[] settings)
     {
-        Id = id,
-        Kind = NodeKind.Client,
-        Label = id,
-        Endpoints = [.. endpoints]
-    };
+        var node = new GraphNode { Id = id, NodeType = type, Label = id };
+        foreach (var (k, v) in settings)
+        {
+            node.Settings[k] = v;
+        }
 
-    private static GraphNode Server(string id, int port = 0) => new()
-    {
-        Id = id,
-        Kind = NodeKind.Server,
-        Label = id,
-        Host = "127.0.0.1",
-        Port = port
-    };
+        return node;
+    }
 
-    private static OrchestrationGraph Graph(List<GraphNode> nodes, params (string from, string to)[] edges) => new()
+    private static GraphNode Protocol(string id, string kind = "length-prefix") =>
+        Node(id, "protocol", ("kindId", kind));
+
+    private static GraphNode Client(string id, string endpoints = "127.0.0.1:502") =>
+        Node(id, "client", ("endpoints", endpoints));
+
+    private static GraphNode Server(string id, int port = 9000) =>
+        Node(id, "server", ("host", "127.0.0.1"), ("port", port.ToString()));
+
+    private static GraphNode Codec(string id, string codecId = "text") =>
+        Node(id, "codec", ("codecId", codecId));
+
+    private static GraphNode Handler(string id) =>
+        Node(id, "handler", ("handlerId", "log"));
+
+    private static GraphNode Sink(string id) =>
+        Node(id, "sink", ("sinkId", "queue"));
+
+    private static OrchestrationGraph Graph(List<GraphNode> nodes, params (string from, string fromPort, string to, string toPort)[] edges) =>
+        new()
+        {
+            Nodes = nodes,
+            Edges = [.. edges.Select((e, i) => new GraphEdge
+            {
+                Id = $"e{i}", From = e.from, FromPort = e.fromPort, To = e.to, ToPort = e.toPort
+            })]
+        };
+
+    private static CompileResult Compile(OrchestrationGraph g) =>
+        GraphCompiler.Compile(g, Kinds, Types, new TestCatalogView());
+
+    /// <summary>测试用注册表视图：声明若干 codec/transform/handler/sink。</summary>
+    private sealed class TestCatalogView : INodeTypeCatalogView
     {
-        Nodes = nodes,
-        Edges = [.. edges.Select((e, i) => new GraphEdge { Id = $"e{i}", From = e.from, To = e.to })]
-    };
+        public bool HasKind(string kindId) => Kinds.Contains(kindId);
+
+        public bool HasCodec(string codecId) => Codecs.Contains(codecId);
+
+        public bool HasTransform(string transformId) => transformId == "scale";
+
+        public bool HasHandler(string handlerId) => handlerId == "log";
+
+        public bool HasSink(string sinkId) => sinkId == "queue";
+    }
+
+    // ---------------- 端口类型约束（本次核心） ----------------
 
     [Fact]
-    public void ShouldCompileValidGraph()
+    public void Client_ShouldNotConnectDirectlyToHandler()
+    {
+        // 用户明确要求的场景：客户端与报文处理逻辑之间必须有编解码器
+        var g = Graph(
+            [Protocol("p"), Client("c"), Handler("h")],
+            ("p", "out", "c", "codec"),
+            ("c", "in", "h", "in"));
+
+        var result = Compile(g);
+
+        Assert.False(result.Ok);
+        var issue = Assert.Single(result.Issues, i => i.Code == "edge_type_mismatch");
+        Assert.Contains("类型不匹配", issue.Message);
+    }
+
+    [Fact]
+    public void Client_ShouldConnectToCodec()
     {
         var g = Graph(
-            [Proto("p"), Client("c", "127.0.0.1:502"), Server("s", 9000)],
-            ("p", "c"), ("p", "s"));
+            [Protocol("p"), Client("c"), Codec("k"), Handler("h")],
+            ("p", "out", "c", "codec"),
+            ("c", "in", "k", "in"),
+            ("k", "out", "h", "in"));
 
-        var result = GraphCompiler.Compile(g, Kinds);
+        var result = Compile(g);
 
         Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
         Assert.NotNull(result.Config);
         Assert.Single(result.Config!.Devices);
-        Assert.Single(result.Config.Listeners);
-        Assert.Equal("length-prefix", result.Config.Devices[0].KindId);
-        Assert.Equal(9000, result.Config.Listeners[0].Port);
+        Assert.Single(result.Topology);
+        Assert.Equal(["c", "k", "h"], result.Topology[0].Path);
     }
 
     [Fact]
-    public void ShouldRejectDuplicateNodeIds()
+    public void Codec_ShouldNotAcceptMessageInput()
     {
-        var g = Graph([Proto("dup"), Client("dup", "127.0.0.1:1")]);
-        var result = GraphCompiler.Compile(g, Kinds);
+        // codec 输入是 IFrame，不能接另一个 codec 的 IMessage 输出
+        var g = Graph(
+            [Protocol("p"), Client("c"), Codec("k1"), Codec("k2"), Handler("h")],
+            ("p", "out", "c", "codec"),
+            ("c", "in", "k1", "in"),
+            ("k1", "out", "k2", "in"),
+            ("k2", "out", "h", "in"));
+
+        var result = Compile(g);
 
         Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "node_id_duplicate");
+        Assert.Contains(result.Issues, i => i.Code == "edge_type_mismatch");
     }
 
     [Fact]
-    public void ShouldRejectClientWithoutProtocol()
+    public void Transform_ShouldChainBetweenMessages()
     {
-        var g = Graph([Proto("p"), Client("c", "127.0.0.1:1")]);
-        var result = GraphCompiler.Compile(g, Kinds);
+        var g = Graph(
+            [Protocol("p"), Client("c"), Codec("k"),
+             Node("t", "transform", ("transformId", "scale"), ("expression", "x2")),
+             Handler("h")],
+            ("p", "out", "c", "codec"),
+            ("c", "in", "k", "in"),
+            ("k", "out", "t", "in"),
+            ("t", "out", "h", "in"));
 
-        Assert.False(result.Ok);
-        var issue = Assert.Single(result.Issues, i => i.Code == "client_no_protocol");
-        Assert.Equal("c", issue.NodeId);
+        var result = Compile(g);
+
+        Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
+        Assert.Equal(["c", "k", "t", "h"], result.Topology[0].Path);
     }
 
     [Fact]
-    public void ShouldRejectServerWithoutProtocol()
+    public void Sink_ShouldAcceptMessage()
     {
-        var g = Graph([Proto("p"), Server("s")]);
-        var result = GraphCompiler.Compile(g, Kinds);
+        var g = Graph(
+            [Protocol("p"), Client("c"), Codec("k"), Sink("s")],
+            ("p", "out", "c", "codec"),
+            ("c", "in", "k", "in"),
+            ("k", "out", "s", "in"));
 
-        Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "server_no_protocol" && i.NodeId == "s");
+        Assert.True(Compile(g).Ok);
     }
 
     [Fact]
-    public void ShouldRejectUnknownProtocolKind()
+    public void Protocol_ShouldNotConnectToHandler()
     {
-        var g = Graph([Proto("p", "not-registered"), Client("c", "127.0.0.1:1")], ("p", "c"));
-        var result = GraphCompiler.Compile(g, Kinds);
+        var g = Graph(
+            [Protocol("p"), Handler("h")],
+            ("p", "out", "h", "in"));
+
+        var result = Compile(g);
 
         Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "protocol_kind_unknown");
+        Assert.Contains(result.Issues, i => i.Code == "edge_type_mismatch");
+    }
+
+    // ---------------- 端口存在性与必连 ----------------
+
+    [Fact]
+    public void ShouldRejectUnknownPort()
+    {
+        var g = Graph(
+            [Protocol("p"), Client("c")],
+            ("p", "nope", "c", "codec"));
+
+        var result = Compile(g);
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "edge_port_missing");
+    }
+
+    [Fact]
+    public void ShouldRejectUnconnectedRequiredPort()
+    {
+        // 客户端必须接协议（codec 输入必连）
+        var g = Graph([Client("c")]);
+
+        var result = Compile(g);
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "port_required_unconnected" && i.NodeId == "c");
+    }
+
+    [Fact]
+    public void ShouldRejectHandlerWithoutInput()
+    {
+        var g = Graph([Protocol("p"), Handler("h")], ("p", "out", "h", "in"));
+
+        var result = Compile(g);
+
+        // 类型不匹配 + 必连缺失都应报出
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "edge_type_mismatch");
+    }
+
+    // ---------------- 环路 ---------------
+
+    [Fact]
+    public void ShouldRejectCycle()
+    {
+        var g = Graph(
+            [Protocol("p"), Client("c"), Codec("k"),
+             Node("t1", "transform", ("transformId", "scale")),
+             Node("t2", "transform", ("transformId", "scale"))],
+            ("p", "out", "c", "codec"),
+            ("c", "in", "k", "in"),
+            ("k", "out", "t1", "in"),
+            ("t1", "out", "t2", "in"),
+            ("t2", "out", "t1", "in"));
+
+        var result = Compile(g);
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "graph_cycle");
+    }
+
+    // ---------------- 节点自身校验 ----------------
+
+    [Fact]
+    public void ShouldRejectUnknownNodeType()
+    {
+        var g = Graph([Node("x", "not-a-type")]);
+        var result = Compile(g);
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "node_type_unknown");
+    }
+
+    [Fact]
+    public void ShouldRejectUnknownKindId()
+    {
+        var g = Graph([Protocol("p", "not-registered"), Client("c"), Codec("k")],
+            ("p", "out", "c", "codec"), ("c", "in", "k", "in"));
+
+        var result = Compile(g);
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "node_invalid" && i.NodeId == "p");
+    }
+
+    [Fact]
+    public void ShouldRejectUnknownCodecId()
+    {
+        var g = Graph(
+            [Protocol("p"), Client("c"), Codec("k", "not-a-codec"), Handler("h")],
+            ("p", "out", "c", "codec"), ("c", "in", "k", "in"), ("k", "out", "h", "in"));
+
+        var result = Compile(g);
+
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "node_invalid" && i.NodeId == "k");
     }
 
     [Theory]
@@ -101,11 +268,13 @@ public sealed class OrchestrationCompilerTests
     [InlineData("host:abc")]
     public void ShouldRejectInvalidEndpoint(string endpoint)
     {
-        var g = Graph([Proto("p"), Client("c", endpoint)], ("p", "c"));
-        var result = GraphCompiler.Compile(g, Kinds);
+        var g = Graph([Protocol("p"), Client("c", endpoint), Codec("k")],
+            ("p", "out", "c", "codec"), ("c", "in", "k", "in"));
+
+        var result = Compile(g);
 
         Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "client_endpoint_invalid");
+        Assert.Contains(result.Issues, i => i.Code == "node_invalid" && i.NodeId == "c");
     }
 
     [Fact]
@@ -117,46 +286,13 @@ public sealed class OrchestrationCompilerTests
     }
 
     [Fact]
-    public void ShouldRejectClientWithoutEndpoint()
-    {
-        var g = Graph([Proto("p"), Client("c")], ("p", "c"));
-        var result = GraphCompiler.Compile(g, Kinds);
-
-        Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "client_no_endpoint");
-    }
-
-    [Fact]
-    public void ShouldRejectEdgeFromNonProtocol()
-    {
-        var g = Graph([Proto("p"), Client("c", "127.0.0.1:1"), Server("s")], ("c", "s"));
-        var result = GraphCompiler.Compile(g, Kinds);
-
-        Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "edge_from_not_protocol");
-    }
-
-    [Fact]
-    public void ShouldRejectNodeBoundToTwoProtocols()
-    {
-        var g = Graph(
-            [Proto("p1"), Proto("p2", "stx-etx"), Client("c", "127.0.0.1:1")],
-            ("p1", "c"), ("p2", "c"));
-
-        var result = GraphCompiler.Compile(g, Kinds);
-
-        Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "node_multiple_protocols");
-    }
-
-    [Fact]
     public void ShouldRejectConflictingListenerPorts()
     {
         var g = Graph(
-            [Proto("p"), Server("s1", 9000), Server("s2", 9000)],
-            ("p", "s1"), ("p", "s2"));
+            [Protocol("p"), Server("s1", 9000), Server("s2", 9000)],
+            ("p", "out", "s1", "codec"), ("p", "out", "s2", "codec"));
 
-        var result = GraphCompiler.Compile(g, Kinds);
+        var result = Compile(g);
 
         Assert.False(result.Ok);
         Assert.Contains(result.Issues, i => i.Code == "listener_port_conflict");
@@ -166,69 +302,110 @@ public sealed class OrchestrationCompilerTests
     public void ShouldAllowMultipleEphemeralListeners()
     {
         var g = Graph(
-            [Proto("p"), Server("s1", 0), Server("s2", 0)],
-            ("p", "s1"), ("p", "s2"));
+            [Protocol("p"), Server("s1", 0), Server("s2", 0)],
+            ("p", "out", "s1", "codec"), ("p", "out", "s2", "codec"));
 
-        var result = GraphCompiler.Compile(g, Kinds);
+        var result = Compile(g);
 
         Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
         Assert.Equal(2, result.Config!.Listeners.Length);
     }
 
     [Fact]
-    public void ShouldCarryProtocolSettingsIntoKindSettings()
+    public void ShouldRejectDuplicateNodeIds()
     {
-        var proto = Proto("p", "stx-etx");
-        proto.Settings = new Dictionary<string, string> { ["start"] = "02", ["end"] = "03" };
-        var g = Graph([proto, Client("c", "127.0.0.1:1")], ("p", "c"));
-
-        var result = GraphCompiler.Compile(g, Kinds);
-
-        Assert.True(result.Ok);
-        var settings = result.Config!.Devices[0].KindSettings;
-        Assert.NotNull(settings);
-        Assert.Equal("02", settings!.Value.GetProperty("start").GetString());
-    }
-
-    [Fact]
-    public void ShouldUseNodeIdWhenDeviceIdBlank()
-    {
-        var g = Graph([Proto("p"), Client("my-client", "127.0.0.1:1")], ("p", "c"));
-        g.Nodes[1].Id = "my-client";
-        g.Edges[0].To = "my-client";
-
-        var result = GraphCompiler.Compile(g, Kinds);
-
-        Assert.True(result.Ok);
-        Assert.Equal("my-client", result.Config!.Devices[0].DeviceId);
-    }
-
-    [Fact]
-    public void ShouldRejectDuplicateDeviceIds()
-    {
-        var c1 = Client("c1", "127.0.0.1:1");
-        c1.DeviceId = "same";
-        var c2 = Client("c2", "127.0.0.1:2");
-        c2.DeviceId = "same";
-        var g = Graph([Proto("p"), c1, c2], ("p", "c1"), ("p", "c2"));
-
-        var result = GraphCompiler.Compile(g, Kinds);
+        var g = Graph([Protocol("dup"), Node("dup", "handler", ("handlerId", "log"))]);
+        var result = Compile(g);
 
         Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "device_id_duplicate");
+        Assert.Contains(result.Issues, i => i.Code == "node_id_duplicate");
     }
+
+    // ---------------- 旧图迁移 ----------------
+
+    [Fact]
+    public void ShouldMigrateLegacyGraphWithoutPorts()
+    {
+        // 旧格式：只有 kind，连线不带端口
+        var legacy = new OrchestrationGraph
+        {
+            Nodes =
+            [
+                new GraphNode { Id = "p", Kind = "Protocol", Label = "协议", Y = 0 },
+                new GraphNode { Id = "c", Kind = "Client", Label = "客户端" },
+                new GraphNode { Id = "s", Kind = "Server", Label = "服务端" }
+            ],
+            Edges =
+            [
+                new GraphEdge { Id = "e1", From = "p", To = "c" },
+                new GraphEdge { Id = "e2", From = "p", To = "s" }
+            ]
+        };
+        legacy.Nodes[0].Settings["kindId"] = "length-prefix";
+
+        GraphMigration.Migrate(legacy);
+
+        // 迁移后：nodeType 就位、端口补齐、旧 kind 清空
+        Assert.Equal("protocol", legacy.Nodes[0].NodeType);
+        Assert.Equal("client", legacy.Nodes[1].NodeType);
+        Assert.Equal("server", legacy.Nodes[2].NodeType);
+        Assert.Null(legacy.Nodes[0].Kind);
+        Assert.Equal("out", legacy.Edges[0].FromPort);
+        Assert.Equal("codec", legacy.Edges[0].ToPort);
+    }
+
+    [Fact]
+    public void MigratedLegacyGraph_ShouldStayValid()
+    {
+        var legacy = new OrchestrationGraph
+        {
+            Nodes =
+            [
+                new GraphNode { Id = "p", Kind = "Protocol", Label = "协议" },
+                new GraphNode { Id = "c", Kind = "Client", Label = "客户端" }
+            ],
+            Edges = [new GraphEdge { Id = "e1", From = "p", To = "c" }]
+        };
+        legacy.Nodes[0].Settings["kindId"] = "length-prefix";
+        legacy.Nodes[1].Settings["endpoints"] = "127.0.0.1:502";
+
+        var result = Compile(legacy);
+
+        Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
+        Assert.Single(result.Config!.Devices);
+    }
+
+    // ---------------- 其它 ----------------
 
     [Fact]
     public void Clone_ShouldBeDeepCopy()
     {
-        var g = Graph([Proto("p"), Client("c", "127.0.0.1:1")], ("p", "c"));
-        g.Nodes[0].Settings = new Dictionary<string, string> { ["k"] = "v" };
+        var g = Graph([Protocol("p")]);
+        g.Nodes[0].Settings["kindId"] = "v";
 
         var copy = g.Clone();
-        copy.Nodes[0].Settings!["k"] = "changed";
-        copy.Nodes[1].Endpoints!.Add("127.0.0.1:9999");
+        copy.Nodes[0].Settings["kindId"] = "changed";
 
-        Assert.Equal("v", g.Nodes[0].Settings!["k"]);
-        Assert.Single(g.Nodes[1].Endpoints!);
+        Assert.Equal("v", g.Nodes[0].Settings["kindId"]);
+    }
+
+    [Fact]
+    public void PortTypes_AnyShouldMatchEverything()
+    {
+        Assert.True(PortSpec.TypesCompatible(PortTypes.Frame, PortTypes.Any));
+        Assert.True(PortSpec.TypesCompatible(PortTypes.Any, PortTypes.Message));
+        Assert.True(PortSpec.TypesCompatible(PortTypes.Frame, PortTypes.Frame));
+        Assert.False(PortSpec.TypesCompatible(PortTypes.Frame, PortTypes.Message));
+    }
+
+    [Fact]
+    public void BuiltInTypes_ShouldDeclareExpectedPorts()
+    {
+        var client = Types.Find("client")!;
+        Assert.Contains(client.Ports, p => p.Id == "codec" && p.Direction == PortDirection.Input && p.DataType == PortTypes.Frame);
+        Assert.Contains(client.Ports, p => p.Id == "in" && p.Direction == PortDirection.Output && p.DataType == PortTypes.Frame);
+
+        var handler = Types.Find("handler")!;
+        Assert.Contains(handler.Ports, p => p.Id == "in" && p.DataType == PortTypes.Message);
     }
 }

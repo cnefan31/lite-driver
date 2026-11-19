@@ -48,12 +48,99 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 | 保存并应用 | 热应用，返回新增/更新/删除/未变 计数 |
 | 删除节点 / 连线 | 选中后删除，再次应用即生效 |
 
+## 节点与端口（连接约束）
+
+编排图由**节点**与**端口连线**组成。连接是否合法，完全由**端口数据类型**决定，不在编译器里硬编码节点种类判断。
+
+| 节点类型 | 输入端口 | 输出端口 |
+| --- | --- | --- |
+| 协议 `protocol` | 配置 `Any` | 帧格式 `IFrame` |
+| 客户端 `client` | 协议 `IFrame`（必连） | 原始帧 `IFrame` |
+| 服务端 `server` | 协议 `IFrame`（必连） | 入站帧 `IFrame` |
+| 编解码器 `codec` | 原始帧 `IFrame`（必连） | 业务消息 `IMessage` |
+| 变换 `transform` | 消息 `IMessage`（必连） | 消息 `IMessage` |
+| 处理器 `handler` | 消息 `IMessage`（必连） | — |
+| 出口 `sink` | 消息 `Any`（必连） | — |
+
+### 为什么客户端不能直连处理器
+
+客户端的输出是 `IFrame`，处理器的输入是 `IMessage`，类型不匹配，连线会被拒：
+
+```
+客户端 [IFrame] ──✗──► 处理器 [IMessage]
+客户端 [IFrame] ──✓──► 编解码器 [IFrame→IMessage] ──✓──► 处理器 [IMessage]
+```
+
+这正是「用接口约束连接性」的实现方式：**端口类型是契约，连线时校验**。
+
+### 合法链路示例
+
+```
+协议 ──► 客户端 ──► 编解码器 ──► 变换 ──► 处理器
+协议 ──► 服务端 ──► 编解码器 ──► 出口
+```
+
+## 扩展自己的节点类型
+
+实现 `INodeType` 并注册即可，编译器与前端自动适配：
+
+```csharp
+public sealed class MyFilterType : INodeType
+{
+    public string TypeId => "filter";
+    public string DisplayName => "过滤器";
+    public string Description => "按条件丢弃消息";
+    public bool IsSource => false;
+
+    public IReadOnlyList<PortSpec> Ports { get; } =
+    [
+        new PortSpec("in", "消息", PortDirection.Input, PortTypes.Message, required: true),
+        new PortSpec("out", "消息", PortDirection.Output, PortTypes.Message)
+    ];
+
+    public IReadOnlyList<NodeField> Fields { get; } =
+    [
+        new NodeField("expression", "条件", NodeFieldKind.Text, "", "丢弃表达式")
+    ];
+
+    public string? Validate(GraphNode node, INodeTypeCatalogView catalog) => null;
+}
+
+var nodeTypes = GraphCompiler.DefaultNodeTypes().Register(new MyFilterType());
+var engine = new OrchestrationEngine(protocols, nodeTypes: nodeTypes);
+```
+
+## 校验规则
+
+编译期一次性报出全部问题，每条都能定位到节点或连线：
+
+| 代码 | 含义 |
+| --- | --- |
+| `edge_type_mismatch` | 端口类型不匹配（如客户端直连处理器） |
+| `edge_port_missing` | 连线引用了不存在的端口 |
+| `port_required_unconnected` | 必连输入端口没有连线 |
+| `graph_cycle` | 链路存在环路 |
+| `node_type_unknown` | 节点类型未注册 |
+| `node_invalid` | 节点自身配置非法（缺 kindId、端点格式错等） |
+| `listener_port_conflict` | 两个监听节点抢占同一地址 |
+
+## 旧图兼容
+
+0.2.0 及更早的图只有 `kind`（Protocol/Client/Server）且连线不带端口。
+读取时 `GraphMigration` 会自动补 `nodeType` 与端口，无需手工重建。
+
+> 注意：旧图的「协议 → 客户端」语义是「客户端使用该协议」，迁移后仍成立；
+> 但旧图没有编解码器节点，因此升级后需要补一个编解码器节点才能接处理器。
+
 ## REST API
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查 |
-| GET | `/api/protocols` | 可用协议与参数字段（驱动页面表单） |
+| GET | `/api/protocols` | 可用协议与参数字段 |
+| GET | `/api/nodetypes` | 节点类型、端口声明与字段（驱动托盘与属性面板） |
+| GET | `/api/registry` | 注册表候选（kinds/codecs/transforms/handlers/sinks） |
+| POST | `/api/connectable` | 判断两个端口能否相连 |
 | GET | `/api/graph` | 当前已保存的编排图 |
 | GET | `/api/state` | 运行时状态：各节点状态、就绪数、会话数、事件流 |
 | POST | `/api/validate` | 仅校验，不应用；返回可定位到节点的 `issues` |

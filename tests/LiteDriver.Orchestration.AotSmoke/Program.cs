@@ -8,7 +8,7 @@ namespace LiteDriver.Orchestration.AotSmoke;
 /// 编排库的 NativeAOT smoke：在裁剪后的原生二进制里验证
 /// 图编译、源生成 JSON 往返、真实热应用与服务端监听。
 /// </summary>
-public static class Program
+public static partial class Program
 {
     private static int _failures;
 
@@ -31,30 +31,55 @@ public static class Program
         {
             Nodes =
             [
-                new GraphNode { Id = "p", Kind = NodeKind.Protocol, Label = "p", KindId = "length-prefix" },
-                new GraphNode { Id = "c", Kind = NodeKind.Client, Label = "c", Endpoints = ["127.0.0.1:1"] },
-                new GraphNode { Id = "s", Kind = NodeKind.Server, Label = "s", Host = "127.0.0.1", Port = 0 }
+                Node("p", "protocol", ("kindId", "length-prefix")),
+                Node("c", "client", ("endpoints", "127.0.0.1:1")),
+                Node("k", "codec", ("codecId", "text")),
+                Node("s", "server", ("host", "127.0.0.1"), ("port", "0"))
             ],
             Edges =
             [
-                new GraphEdge { Id = "e1", From = "p", To = "c" },
-                new GraphEdge { Id = "e2", From = "p", To = "s" }
+                new GraphEdge { Id = "e1", From = "p", FromPort = "out", To = "c", ToPort = "codec" },
+                new GraphEdge { Id = "e2", From = "p", FromPort = "out", To = "s", ToPort = "codec" },
+                new GraphEdge { Id = "e3", From = "c", FromPort = "in", To = "k", ToPort = "in" }
             ]
         };
 
-        var result = GraphCompiler.Compile(graph, ["length-prefix"]);
+        var result = GraphCompiler.Compile(
+            graph, ["length-prefix"], GraphCompiler.DefaultNodeTypes(), new SmokeCatalogView());
         Expect(result.Ok, "编排图编译通过");
         Expect(result.Config is not null, "编译产出 DriverConfig");
 
         // 负例：未连协议必须报错并可定位到节点
-        var bad = new OrchestrationGraph
+        // 负例 1：客户端直连处理器 -> 端口类型不匹配
+        var mismatch = new OrchestrationGraph
         {
-            Nodes = [new GraphNode { Id = "lonely", Kind = NodeKind.Server, Label = "lonely", Host = "127.0.0.1" }],
+            Nodes =
+            [
+                Node("p", "protocol", ("kindId", "length-prefix")),
+                Node("c", "client", ("endpoints", "127.0.0.1:1")),
+                Node("h", "handler", ("handlerId", "log"))
+            ],
+            Edges =
+            [
+                new GraphEdge { Id = "e1", From = "p", FromPort = "out", To = "c", ToPort = "codec" },
+                new GraphEdge { Id = "e2", From = "c", FromPort = "in", To = "h", ToPort = "in" }
+            ]
+        };
+        var badResult = GraphCompiler.Compile(
+            mismatch, ["length-prefix"], GraphCompiler.DefaultNodeTypes(), new SmokeCatalogView());
+        Expect(!badResult.Ok, "客户端直连处理器被拒绝");
+        Expect(badResult.Issues.Any(i => i.Code == "edge_type_mismatch"), "拒绝原因是端口类型不匹配");
+
+        // 负例 2：必连端口未连接
+        var orphan = new OrchestrationGraph
+        {
+            Nodes = [Node("lonely", "server", ("host", "127.0.0.1"), ("port", "0"))],
             Edges = []
         };
-        var badResult = GraphCompiler.Compile(bad, ["length-prefix"]);
-        Expect(!badResult.Ok, "未连协议的节点被拒绝");
-        Expect(badResult.Issues.Any(i => i.NodeId == "lonely"), "问题可定位到具体节点");
+        var orphanResult = GraphCompiler.Compile(
+            orphan, ["length-prefix"], GraphCompiler.DefaultNodeTypes(), new SmokeCatalogView());
+        Expect(!orphanResult.Ok, "缺必连端口的节点被拒绝");
+        Expect(orphanResult.Issues.Any(i => i.NodeId == "lonely"), "问题可定位到具体节点");
     }
 
     private static Task CheckJsonRoundTripAsync()
@@ -66,10 +91,9 @@ public static class Program
                 new GraphNode
                 {
                     Id = "p",
-                    Kind = NodeKind.Protocol,
+                    NodeType = "protocol",
                     Label = "协议",
-                    KindId = "stx-etx",
-                    Settings = new Dictionary<string, string> { ["start"] = "02", ["end"] = "03" }
+                    Settings = new Dictionary<string, string> { ["kindId"] = "stx-etx", ["start"] = "02" }
                 }
             ],
             Edges = []
@@ -79,8 +103,8 @@ public static class Program
         var back = JsonSerializer.Deserialize(json, OrchestrationJsonContext.Default.OrchestrationGraph);
 
         Expect(back is not null, "源生成 JSON 往返成功");
-        Expect(back!.Nodes.Count == 1 && back.Nodes[0].Kind == NodeKind.Protocol, "枚举按字符串往返正确");
-        Expect(back.Nodes[0].Settings!["start"] == "02", "协议参数往返正确");
+        Expect(back!.Nodes.Count == 1 && back.Nodes[0].NodeType == "protocol", "节点类型往返正确");
+        Expect(back.Nodes[0].Settings["start"] == "02", "协议参数往返正确");
         return Task.CompletedTask;
     }
 
@@ -90,17 +114,21 @@ public static class Program
         {
             new("length-prefix", "长度前缀", "2 字节大端长度 + 载荷", [], static ctx => new LengthKind(ctx), null)
         };
+        var codecs = new List<CodecRegistration>
+        {
+            new("text", "文本", "UTF-8", static ctx => new SmokeTextCodec(ctx))
+        };
 
-        await using var engine = new OrchestrationEngine(protocols);
+        await using var engine = new OrchestrationEngine(protocols, codecs);
 
         var graph = new OrchestrationGraph
         {
             Nodes =
             [
-                new GraphNode { Id = "p", Kind = NodeKind.Protocol, Label = "p", KindId = "length-prefix" },
-                new GraphNode { Id = "s", Kind = NodeKind.Server, Label = "s", Host = "127.0.0.1", Port = 0, MaxSessions = 4 }
+                Node("p", "protocol", ("kindId", "length-prefix")),
+                Node("s", "server", ("host", "127.0.0.1"), ("port", "0"), ("maxSessions", "4"))
             ],
-            Edges = [new GraphEdge { Id = "e", From = "p", To = "s" }]
+            Edges = [new GraphEdge { Id = "e", From = "p", FromPort = "out", To = "s", ToPort = "codec" }]
         };
 
         var report = await engine.ApplyAsync(graph);
@@ -109,17 +137,17 @@ public static class Program
         var status = engine.Status();
         Expect(status.Running, "引擎进入运行状态");
 
-        var server = status.Nodes.FirstOrDefault(n => n.Kind == "Server");
+        var server = status.Nodes.FirstOrDefault(n => n.Kind == "server");
         Expect(server is not null && server.Port > 0, $"服务端已监听真实端口（{server?.Port}）");
 
         // 端口回写：应用后图内端口应变为实际端口，重复应用才不会漂移
         var withPort = engine.CurrentGraph;
-        Expect(withPort.Nodes.Any(n => n.Port > 0), "实际端口已回写进图");
-        var portAfterFirst = withPort.Nodes.First(n => n.Kind == NodeKind.Server).Port;
+        Expect(withPort.Nodes.Any(n => n.NodeType == "server" && n.GetInt("port") > 0), "实际端口已回写进图");
+        var portAfterFirst = withPort.Nodes.First(n => n.NodeType == "server").GetInt("port");
 
         // 第二次应用是「端口 0 → 实际端口」那一次，必然计为更新；此后才应稳定。
         var second = await engine.ApplyAsync(withPort);
-        var portAfterSecond = engine.CurrentGraph.Nodes.First(n => n.Kind == NodeKind.Server).Port;
+        var portAfterSecond = engine.CurrentGraph.Nodes.First(n => n.NodeType == "server").GetInt("port");
         Expect(second.Ok && portAfterFirst == portAfterSecond, "第二次应用后端口不再漂移");
 
         var third = await engine.ApplyAsync(engine.CurrentGraph);
@@ -167,3 +195,56 @@ internal sealed class LengthProtocol : ISessionProtocol
 
     public IResponsePolicy Response { get; } = new NextFrameResponsePolicy();
 }
+
+/// <summary>smoke 用节点构造辅助。</summary>
+static partial class Program
+{
+    private static GraphNode Node(string id, string type, params (string key, string value)[] settings)
+    {
+        var node = new GraphNode { Id = id, NodeType = type, Label = id };
+        foreach (var (k, v) in settings)
+        {
+            node.Settings[k] = v;
+        }
+
+        return node;
+    }
+
+    /// <summary>smoke 用注册表视图。</summary>
+    private sealed class SmokeCatalogView : INodeTypeCatalogView
+    {
+        public bool HasKind(string kindId) => kindId == "length-prefix";
+
+        public bool HasCodec(string codecId) => codecId == "text";
+
+        public bool HasTransform(string transformId) => false;
+
+        public bool HasHandler(string handlerId) => handlerId == "log";
+
+        public bool HasSink(string sinkId) => sinkId == "queue";
+    }
+}
+
+/// <summary>smoke 用编解码器。</summary>
+internal sealed class SmokeTextCodec : IPayloadCodec
+{
+    public SmokeTextCodec(PayloadCodecContext ctx) => _ = ctx;
+
+    public string CodecId => "text";
+
+    public PayloadMessage Decode(ReadOnlySpan<byte> frame)
+    {
+        var payload = frame.Length > 2 ? frame[2..] : default;
+        return PayloadMessage.From(new SmokeTextMessage(System.Text.Encoding.UTF8.GetString(payload)));
+    }
+
+    public void Encode(PayloadMessage message, System.Buffers.IBufferWriter<byte> writer)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(message.As<SmokeTextMessage>().Text);
+        bytes.CopyTo(writer.GetSpan(bytes.Length));
+        writer.Advance(bytes.Length);
+    }
+}
+
+/// <summary>smoke 业务消息。</summary>
+internal sealed record SmokeTextMessage(string Text);

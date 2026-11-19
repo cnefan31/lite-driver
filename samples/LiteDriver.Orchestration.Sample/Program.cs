@@ -24,7 +24,13 @@ public static class Program
 
         var protocols = BuildProtocols();
 
-        await using var engine = new OrchestrationEngine(protocols);
+        // 注册编解码器/变换器/处理器/出口，供编排页面上的对应节点选择。
+        await using var engine = new OrchestrationEngine(
+            protocols,
+            codecs: BuildCodecs(),
+            transforms: [new ComponentRegistration("scale", "数值换算", "乘以系数")],
+            handlers: [new ComponentRegistration("log", "记录日志", "把消息写入事件流")],
+            sinks: [new ComponentRegistration("queue", "内存队列", "送入内存队列")]);
 
         await using var server = new OrchestrationServer(
             engine,
@@ -79,6 +85,16 @@ public static class Program
 
         return null;
     }
+
+    /// <summary>注册给编排页面使用的编解码器。</summary>
+    private static List<CodecRegistration> BuildCodecs() =>
+    [
+        new CodecRegistration(
+            "text",
+            "文本编解码",
+            "长度前缀协议下取载荷按 UTF-8 转成文本消息",
+            static ctx => new TextCodec(ctx))
+    ];
 
     /// <summary>注册给编排页面使用的协议种类。</summary>
     private static List<ProtocolRegistration> BuildProtocols() =>
@@ -257,3 +273,31 @@ public sealed class FixedPaddedEncoder : IFrameEncoder
         writer.Advance(length);
     }
 }
+
+/// <summary>示例编解码器：长度前缀帧的载荷按 UTF-8 解码。</summary>
+public sealed class TextCodec : IPayloadCodec
+{
+    public TextCodec(PayloadCodecContext ctx) => _ = ctx;
+
+    /// <inheritdoc />
+    public string CodecId => "text";
+
+    /// <inheritdoc />
+    public PayloadMessage Decode(ReadOnlySpan<byte> frame)
+    {
+        // 长度前缀协议：前 2 字节是帧体长度。
+        var payload = frame.Length > 2 ? frame[2..] : default;
+        return PayloadMessage.From(new TextMessage(System.Text.Encoding.UTF8.GetString(payload)), "text");
+    }
+
+    /// <inheritdoc />
+    public void Encode(PayloadMessage message, System.Buffers.IBufferWriter<byte> writer)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(message.As<TextMessage>().Text);
+        bytes.CopyTo(writer.GetSpan(bytes.Length));
+        writer.Advance(bytes.Length);
+    }
+}
+
+/// <summary>示例业务消息。</summary>
+public sealed record TextMessage(string Text);

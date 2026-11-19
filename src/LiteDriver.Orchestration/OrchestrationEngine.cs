@@ -5,6 +5,17 @@ using global::LiteDriver.Protocol;
 
 namespace LiteDriver.Orchestration;
 
+/// <summary>宿主注册的编解码器（供编排页面的 codec 节点选择）。</summary>
+public sealed record CodecRegistration(
+    string CodecId,
+    string DisplayName,
+    string Description,
+    Func<PayloadCodecContext, IPayloadCodec> Factory,
+    PayloadCodecSettingsValidator? Validator = null);
+
+/// <summary>宿主注册的变换器 / 处理器 / 出口，仅用于编排页面选择与校验存在性。</summary>
+public sealed record ComponentRegistration(string Id, string DisplayName, string Description);
+
 /// <summary>宿主注册的协议种类。编排引擎据此构造驱动并校验 kindSettings。</summary>
 public sealed record ProtocolRegistration(
     string KindId,
@@ -18,13 +29,18 @@ public sealed record ProtocolRegistration(
 /// 编排引擎：持有唯一 <see cref="LiteDriver"/> 实例，负责把编排图热应用上去。
 /// <b>应用时不销毁驱动</b>，只调用 <c>ApplyAsync</c>，因此后端服务无需重启。
 /// </summary>
-public sealed class OrchestrationEngine : IAsyncDisposable
+public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<ProtocolRegistration> _protocols;
     private readonly IReadOnlyDictionary<string, ProtocolRegistration> _protocolMap;
     private readonly ConcurrentQueue<EventEntry> _events = new();
     private readonly OrchestrationObserver _observer;
+    private readonly NodeTypeCatalog _nodeTypes;
+    private readonly List<CodecRegistration> _codecs;
+    private readonly List<ComponentRegistration> _transforms;
+    private readonly List<ComponentRegistration> _handlers;
+    private readonly List<ComponentRegistration> _sinks;
     private LiteDriver? _driver;
     private OrchestrationGraph _graph = new();
     private long _revision;
@@ -32,13 +48,45 @@ public sealed class OrchestrationEngine : IAsyncDisposable
     private volatile bool _running;
 
     /// <summary>创建引擎。</summary>
-    public OrchestrationEngine(IEnumerable<ProtocolRegistration> protocols)
+    /// <param name="protocols">协议种类。</param>
+    /// <param name="codecs">载荷编解码器（可选，供 codec 节点选择）。</param>
+    /// <param name="transforms">变换器（可选，供 transform 节点选择）。</param>
+    /// <param name="handlers">处理器（可选，供 handler 节点选择）。</param>
+    /// <param name="sinks">出口（可选，供 sink 节点选择）。</param>
+    /// <param name="nodeTypes">自定义节点类型目录；为 null 时使用六个内置类型。</param>
+    public OrchestrationEngine(
+        IEnumerable<ProtocolRegistration> protocols,
+        IEnumerable<CodecRegistration>? codecs = null,
+        IEnumerable<ComponentRegistration>? transforms = null,
+        IEnumerable<ComponentRegistration>? handlers = null,
+        IEnumerable<ComponentRegistration>? sinks = null,
+        NodeTypeCatalog? nodeTypes = null)
     {
         ArgumentNullException.ThrowIfNull(protocols);
         _protocols = [.. protocols];
         _protocolMap = _protocols.ToDictionary(p => p.KindId, StringComparer.Ordinal);
+        _codecs = codecs is null ? [] : [.. codecs];
+        _transforms = transforms is null ? [] : [.. transforms];
+        _handlers = handlers is null ? [] : [.. handlers];
+        _sinks = sinks is null ? [] : [.. sinks];
+        _nodeTypes = nodeTypes ?? GraphCompiler.DefaultNodeTypes();
         _observer = new OrchestrationObserver(this);
     }
+
+    /// <summary>节点类型目录（供前端渲染托盘）。</summary>
+    public NodeTypeCatalog NodeTypes => _nodeTypes;
+
+    /// <summary>已注册的编解码器。</summary>
+    public IReadOnlyList<CodecRegistration> Codecs => _codecs;
+
+    /// <summary>已注册的变换器。</summary>
+    public IReadOnlyList<ComponentRegistration> Transforms => _transforms;
+
+    /// <summary>已注册的处理器。</summary>
+    public IReadOnlyList<ComponentRegistration> Handlers => _handlers;
+
+    /// <summary>已注册的出口。</summary>
+    public IReadOnlyList<ComponentRegistration> Sinks => _sinks;
 
     /// <summary>可用的协议种类。</summary>
     public IReadOnlyList<ProtocolRegistration> Protocols => _protocols;
@@ -137,22 +185,22 @@ public sealed class OrchestrationEngine : IAsyncDisposable
 
         foreach (var node in graph.Nodes)
         {
-            if (node.Kind != NodeKind.Server)
+            if (node.NodeType != "server")
             {
                 continue;
             }
 
-            var listenerId = string.IsNullOrWhiteSpace(node.ListenerId) ? node.Id : node.ListenerId!;
+            var listenerId = string.IsNullOrWhiteSpace(node.Get("listenerId")) ? node.Id : node.Get("listenerId");
             if (ports.TryGetValue(listenerId, out var actual) && actual > 0)
             {
-                node.Port = actual;
+                node.Settings["port"] = actual.ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
         }
     }
 
     /// <summary>读取编译预览：不应用，只返回编译问题，供前端「校验」按钮使用。</summary>
     public CompileResult Validate(OrchestrationGraph graph) =>
-        GraphCompiler.Compile(graph, [.. _protocolMap.Keys]);
+        GraphCompiler.Compile(graph, [.. _protocolMap.Keys], _nodeTypes, this);
 
     private LiteDriver BuildDriver()
     {
@@ -171,6 +219,19 @@ public sealed class OrchestrationEngine : IAsyncDisposable
             }
         }
 
+        foreach (var codec in _codecs)
+        {
+            var factory = codec.Factory;
+            if (codec.Validator is null)
+            {
+                builder.RegisterCodec(codec.CodecId, ctx => factory(ctx));
+            }
+            else
+            {
+                builder.RegisterCodec(codec.CodecId, ctx => factory(ctx), codec.Validator);
+            }
+        }
+
         return builder.UseObserver(_observer).Build();
     }
 
@@ -184,8 +245,8 @@ public sealed class OrchestrationEngine : IAsyncDisposable
         {
             return new OrchestrationStatus(
                 false, _revision,
-                graph.Nodes.Count(n => n.Kind == NodeKind.Client),
-                graph.Nodes.Count(n => n.Kind == NodeKind.Server),
+                graph.Nodes.Count(n => n.NodeType == "client"),
+                graph.Nodes.Count(n => n.NodeType == "server"),
                 0, 0, [], [.. _events], _lastError);
         }
 
@@ -196,15 +257,16 @@ public sealed class OrchestrationEngine : IAsyncDisposable
 
         foreach (var node in graph.Nodes)
         {
-            if (node.Kind == NodeKind.Protocol)
+            if (node.NodeType is not ("client" or "server"))
             {
-                nodes.Add(new NodeStatus(node.Id, "Protocol", "Static", 0, 0, 0, node.KindId));
+                // 协议/编解码器/变换/处理器/出口：静态节点，只回显类型与标识。
+                nodes.Add(new NodeStatus(node.Id, node.NodeType, "Static", 0, 0, 0, node.Label));
                 continue;
             }
 
-            if (node.Kind == NodeKind.Client)
+            if (node.NodeType == "client")
             {
-                var deviceId = string.IsNullOrWhiteSpace(node.DeviceId) ? node.Id : node.DeviceId!;
+                var deviceId = string.IsNullOrWhiteSpace(node.Get("deviceId")) ? node.Id : node.Get("deviceId");
                 if (driver.TryGetDevice(deviceId, out var handle))
                 {
                     var state = handle.State.ToString();
@@ -213,27 +275,27 @@ public sealed class OrchestrationEngine : IAsyncDisposable
                         ready++;
                     }
 
-                    nodes.Add(new NodeStatus(node.Id, "Client", state, handle.Epoch, 0, 0, deviceId));
+                    nodes.Add(new NodeStatus(node.Id, "client", state, handle.Epoch, 0, 0, deviceId));
                 }
                 else
                 {
-                    nodes.Add(new NodeStatus(node.Id, "Client", "Absent", 0, 0, 0, deviceId));
+                    nodes.Add(new NodeStatus(node.Id, "client", "Absent", 0, 0, 0, deviceId));
                 }
 
                 continue;
             }
 
-            var listenerId = string.IsNullOrWhiteSpace(node.ListenerId) ? node.Id : node.ListenerId!;
+            var listenerId = string.IsNullOrWhiteSpace(node.Get("listenerId")) ? node.Id : node.Get("listenerId");
             var count = driver.GetListenerSessionCount(listenerId);
             sessions += count;
             ports.TryGetValue(listenerId, out var port);
-            nodes.Add(new NodeStatus(node.Id, "Server", port > 0 ? "Listening" : "Absent", 0, count, port, listenerId));
+            nodes.Add(new NodeStatus(node.Id, "server", port > 0 ? "Listening" : "Absent", 0, count, port, listenerId));
         }
 
         return new OrchestrationStatus(
             true, _revision,
-            graph.Nodes.Count(n => n.Kind == NodeKind.Client),
-            graph.Nodes.Count(n => n.Kind == NodeKind.Server),
+            graph.Nodes.Count(n => n.NodeType == "client"),
+            graph.Nodes.Count(n => n.NodeType == "server"),
             ready, sessions, nodes, [.. _events], _lastError);
     }
 
@@ -252,6 +314,26 @@ public sealed class OrchestrationEngine : IAsyncDisposable
         }
     }
 
+    // ---- INodeTypeCatalogView：供节点类型校验「某项是否已注册」 ----
+
+    /// <inheritdoc />
+    public bool HasKind(string kindId) => _protocolMap.ContainsKey(kindId);
+
+    /// <inheritdoc />
+    public bool HasCodec(string codecId) => _codecs.Any(c => string.Equals(c.CodecId, codecId, StringComparison.Ordinal));
+
+    /// <inheritdoc />
+    public bool HasTransform(string transformId) =>
+        _transforms.Any(t => string.Equals(t.Id, transformId, StringComparison.Ordinal));
+
+    /// <inheritdoc />
+    public bool HasHandler(string handlerId) =>
+        _handlers.Any(h => string.Equals(h.Id, handlerId, StringComparison.Ordinal));
+
+    /// <inheritdoc />
+    public bool HasSink(string sinkId) =>
+        _sinks.Any(s => string.Equals(s.Id, sinkId, StringComparison.Ordinal));
+
     public async ValueTask DisposeAsync()
     {
         if (_driver is not null)
@@ -265,7 +347,7 @@ public sealed class OrchestrationEngine : IAsyncDisposable
     }
 }
 
-/// <summary>把驱动事件收进编排引擎的环形缓冲。</summary>
+/// <summary>圆环缓冲部分：让引擎同时充当节点类型校验所需的注册表视图。</summary>
 internal sealed class OrchestrationObserver : IDriverObserver
 {
     private readonly OrchestrationEngine _engine;

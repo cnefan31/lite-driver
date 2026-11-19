@@ -5,23 +5,34 @@ using global::LiteDriver.Configuration;
 namespace LiteDriver.Orchestration;
 
 /// <summary>
-/// 把编排图编译成 <see cref="DriverConfig"/>。
-/// 编译是纯函数、不碰网络，因此可以在应用前把所有问题一次性报出并定位到节点。
+/// 把编排图编译成 <see cref="DriverConfig"/> 与链路拓扑。
+/// <para>
+/// 编译是纯函数、不碰网络，因此能在应用前一次性报出全部问题并定位到节点/连线。
+/// 连接合法性完全由<b>端口类型</b>决定，不在编译器里硬编码节点种类判断。
+/// </para>
 /// </summary>
 public static class GraphCompiler
 {
     /// <summary>编译编排图。</summary>
-    /// <param name="graph">要编译的图。</param>
-    /// <param name="knownKinds">宿主注册的协议种类键。</param>
-    public static CompileResult Compile(OrchestrationGraph graph, IReadOnlyCollection<string> knownKinds)
+    public static CompileResult Compile(
+        OrchestrationGraph graph,
+        IReadOnlyCollection<string> knownKinds,
+        NodeTypeCatalog? nodeTypes = null,
+        INodeTypeCatalogView? catalogView = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(knownKinds);
 
-        var issues = new List<CompileIssue>();
-        var nodes = new Dictionary<string, GraphNode>(StringComparer.Ordinal);
+        // 先迁移旧图，使后续逻辑只需处理新格式。
+        GraphMigration.Migrate(graph);
 
-        // ---- 1) 节点标识唯一性 ----
+        var types = nodeTypes ?? DefaultNodeTypes();
+        var view = catalogView ?? new KindOnlyView(knownKinds);
+
+        var issues = new List<CompileIssue>();
+        var nodeMap = new Dictionary<string, GraphNode>(StringComparer.Ordinal);
+
+        // ---- 1) 节点标识与类型 ----
         foreach (var node in graph.Nodes)
         {
             if (string.IsNullOrWhiteSpace(node.Id))
@@ -30,7 +41,7 @@ public static class GraphCompiler
                 continue;
             }
 
-            if (!nodes.TryAdd(node.Id, node))
+            if (!nodeMap.TryAdd(node.Id, node))
             {
                 issues.Add(new CompileIssue("node_id_duplicate", $"节点 Id '{node.Id}' 重复", node.Id));
             }
@@ -38,297 +49,405 @@ public static class GraphCompiler
 
         if (issues.Count > 0)
         {
-            return new CompileResult(false, null, issues);
+            return new CompileResult(false, null, issues, [], []);
         }
 
-        // ---- 2) 连线只允许 Protocol → Client/Server ----
-        // 记录每个 Client/Server 引用的协议节点。
-        var reference = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var node in graph.Nodes)
+        {
+            if (string.IsNullOrWhiteSpace(node.NodeType))
+            {
+                issues.Add(new CompileIssue("node_type_empty", $"节点 '{node.Label}' 缺少类型", node.Id));
+                continue;
+            }
 
+            var type = types.Find(node.NodeType);
+            if (type is null)
+            {
+                issues.Add(new CompileIssue(
+                    "node_type_unknown", $"节点 '{node.Label}' 的类型 '{node.NodeType}' 未注册", node.Id));
+                continue;
+            }
+
+            var error = type.Validate(node, view);
+            if (error is not null)
+            {
+                issues.Add(new CompileIssue("node_invalid", $"节点 '{node.Label}'：{error}", node.Id));
+            }
+        }
+
+        // ---- 2) 连线：端口存在性 + 方向 + 类型兼容 ----
         foreach (var edge in graph.Edges)
         {
-            if (!nodes.TryGetValue(edge.From, out var from))
+            if (!nodeMap.TryGetValue(edge.From, out var from))
             {
                 issues.Add(new CompileIssue("edge_from_missing", $"连线起点 '{edge.From}' 不存在", edge.From));
                 continue;
             }
 
-            if (!nodes.TryGetValue(edge.To, out var to))
+            if (!nodeMap.TryGetValue(edge.To, out var to))
             {
                 issues.Add(new CompileIssue("edge_to_missing", $"连线终点 '{edge.To}' 不存在", edge.To));
                 continue;
             }
 
-            if (from.Kind != NodeKind.Protocol)
+            var fromType = types.Find(from.NodeType);
+            var toType = types.Find(to.NodeType);
+            if (fromType is null || toType is null)
+            {
+                continue;
+            }
+
+            var outPort = fromType.Ports.FirstOrDefault(
+                p => p.Direction == PortDirection.Output &&
+                     string.Equals(p.Id, edge.FromPort, StringComparison.Ordinal));
+            var inPort = toType.Ports.FirstOrDefault(
+                p => p.Direction == PortDirection.Input &&
+                     string.Equals(p.Id, edge.ToPort, StringComparison.Ordinal));
+
+            if (outPort is null)
             {
                 issues.Add(new CompileIssue(
-                    "edge_from_not_protocol",
-                    "连线必须从协议节点出发（协议 → 客户端 / 协议 → 服务端）",
-                    from.Id));
+                    "edge_port_missing",
+                    $"节点 '{from.Label}' 没有输出端口 '{edge.FromPort}'", from.Id));
                 continue;
             }
 
-            if (to.Kind == NodeKind.Protocol)
-            {
-                issues.Add(new CompileIssue("edge_to_protocol", "协议节点不能作为连线终点", to.Id));
-                continue;
-            }
-
-            if (reference.TryGetValue(to.Id, out var existing))
-            {
-                if (existing != from.Id)
-                {
-                    issues.Add(new CompileIssue(
-                        "node_multiple_protocols",
-                        $"节点 '{to.Label}' 已绑定协议 '{existing}'，不能同时绑定多个协议",
-                        to.Id));
-                }
-
-                continue;
-            }
-
-            reference[to.Id] = from.Id;
-        }
-
-        // ---- 3) 逐个节点校验 ----
-        var devices = new List<DeviceDescriptor>();
-        var listeners = new List<ListenerDescriptor>();
-        var usedDeviceIds = new HashSet<string>(StringComparer.Ordinal);
-        var usedListenerIds = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var node in graph.Nodes)
-        {
-            switch (node.Kind)
-            {
-                case NodeKind.Protocol:
-                    CompileProtocol(node, knownKinds, issues);
-                    break;
-
-                case NodeKind.Client:
-                    CompileClient(node, nodes, reference, knownKinds, devices, usedDeviceIds, issues);
-                    break;
-
-                case NodeKind.Server:
-                    CompileServer(node, nodes, reference, knownKinds, listeners, usedListenerIds, issues);
-                    break;
-
-                default:
-                    issues.Add(new CompileIssue("node_kind_unknown", $"未知节点类型 {node.Kind}", node.Id));
-                    break;
-            }
-        }
-
-        // ---- 4) 监听端口冲突（同一 host:port 非 0）----
-        var ports = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var listener in listeners)
-        {
-            if (listener.Port == 0)
-            {
-                continue;
-            }
-
-            var key = listener.Host + ":" + listener.Port.ToString(CultureInfo.InvariantCulture);
-            if (ports.TryGetValue(key, out var owner))
+            if (inPort is null)
             {
                 issues.Add(new CompileIssue(
-                    "listener_port_conflict", $"监听地址 {key} 与节点 '{owner}' 冲突", listener.ListenerId));
+                    "edge_port_missing",
+                    $"节点 '{to.Label}' 没有输入端口 '{edge.ToPort}'", to.Id));
+                continue;
             }
-            else
+
+            if (!PortSpec.TypesCompatible(outPort.DataType, inPort.DataType))
             {
-                ports[key] = listener.ListenerId;
+                issues.Add(new CompileIssue(
+                    "edge_type_mismatch",
+                    $"不能把 {from.Label}（{outPort.DataType}）连到 {to.Label}（{inPort.DataType}）：" +
+                    $"类型不匹配，中间需要一个转换节点",
+                    to.Id));
             }
         }
+
+        // ---- 3) 必连端口 + 链路完整性 ----
+        CheckRequiredPorts(graph, types, issues);
+        CheckNoCycles(graph, nodeMap, issues);
 
         if (issues.Count > 0)
         {
-            return new CompileResult(false, null, issues);
+            return new CompileResult(false, null, issues, [], []);
         }
 
-        var config = new DriverConfig
-        {
-            Devices = [.. devices],
-            Listeners = [.. listeners]
-        };
-
-        return new CompileResult(true, config, issues);
+        // ---- 4) 生成 DriverConfig 与拓扑 ----
+        return BuildConfig(graph, types, knownKinds, issues);
     }
 
-    private static void CompileProtocol(GraphNode node, IReadOnlyCollection<string> knownKinds, List<CompileIssue> issues)
-    {
-        if (string.IsNullOrWhiteSpace(node.KindId))
-        {
-            issues.Add(new CompileIssue("protocol_kind_empty", $"协议节点 '{node.Label}' 未选择协议种类", node.Id));
-            return;
-        }
+    /// <summary>默认节点类型目录（六个内置类型）。</summary>
+    public static NodeTypeCatalog DefaultNodeTypes() => new NodeTypeCatalog()
+        .Register(new BuiltInNodeTypes.ProtocolType())
+        .Register(new BuiltInNodeTypes.ClientType())
+        .Register(new BuiltInNodeTypes.ServerType())
+        .Register(new BuiltInNodeTypes.CodecType())
+        .Register(new BuiltInNodeTypes.TransformType())
+        .Register(new BuiltInNodeTypes.HandlerType())
+        .Register(new BuiltInNodeTypes.SinkType());
 
-        if (!knownKinds.Contains(node.KindId))
-        {
-            issues.Add(new CompileIssue(
-                "protocol_kind_unknown",
-                $"协议节点 '{node.Label}' 使用了未注册的种类 '{node.KindId}'",
-                node.Id));
-        }
-    }
-
-    private static void CompileClient(
-        GraphNode node,
-        IReadOnlyDictionary<string, GraphNode> nodes,
-        IReadOnlyDictionary<string, string> reference,
-        IReadOnlyCollection<string> knownKinds,
-        List<DeviceDescriptor> devices,
-        HashSet<string> usedDeviceIds,
+    /// <summary>检查每条链路的必连端口是否都有连线。</summary>
+    private static void CheckRequiredPorts(
+        OrchestrationGraph graph,
+        NodeTypeCatalog types,
         List<CompileIssue> issues)
     {
-        if (!reference.TryGetValue(node.Id, out var protocolNodeId))
+        foreach (var node in graph.Nodes)
         {
-            issues.Add(new CompileIssue(
-                "client_no_protocol",
-                $"客户端节点 '{node.Label}' 未连接协议节点",
-                node.Id));
-            return;
-        }
-
-        var protocol = nodes[protocolNodeId];
-        if (string.IsNullOrWhiteSpace(protocol.KindId) || !knownKinds.Contains(protocol.KindId!))
-        {
-            // 协议节点自身的问题已单独报告，这里不重复。
-            return;
-        }
-
-        var deviceId = string.IsNullOrWhiteSpace(node.DeviceId) ? node.Id : node.DeviceId!.Trim();
-        if (!usedDeviceIds.Add(deviceId))
-        {
-            issues.Add(new CompileIssue("device_id_duplicate", $"设备标识 '{deviceId}' 重复", node.Id));
-            return;
-        }
-
-        var endpoints = new List<EndpointDescriptor>();
-        if (node.Endpoints is null || node.Endpoints.Count == 0)
-        {
-            issues.Add(new CompileIssue(
-                "client_no_endpoint",
-                $"客户端节点 '{node.Label}' 至少需要一个端点",
-                node.Id));
-            return;
-        }
-
-        for (var i = 0; i < node.Endpoints.Count; i++)
-        {
-            if (!TryParseEndpoint(node.Endpoints[i], out var host, out var port, out var error))
+            var type = types.Find(node.NodeType);
+            if (type is null)
             {
-                issues.Add(new CompileIssue(
-                    "client_endpoint_invalid",
-                    $"客户端节点 '{node.Label}' 第 {i + 1} 个端点非法：{error}",
-                    node.Id));
                 continue;
             }
 
-            endpoints.Add(new EndpointDescriptor
+            foreach (var port in type.Ports)
             {
-                Host = host,
-                Port = port,
-                EndpointId = $"ep{i}"
-            });
-        }
+                if (!port.Required || port.Direction != PortDirection.Input)
+                {
+                    continue;
+                }
 
-        if (endpoints.Count == 0)
-        {
-            return;
-        }
+                var connected = graph.Edges.Any(e =>
+                    string.Equals(e.To, node.Id, StringComparison.Ordinal) &&
+                    string.Equals(e.ToPort, port.Id, StringComparison.Ordinal));
 
-        devices.Add(new DeviceDescriptor
-        {
-            DeviceId = deviceId,
-            KindId = protocol.KindId!,
-            Endpoints = [.. endpoints],
-            Retry = new RetryOptions
-            {
-                InitialMs = Math.Clamp(node.RetryInitialMs, 1, 600_000),
-                MaxMs = Math.Clamp(node.RetryMaxMs, 1, 3_600_000),
-                ConnectTimeoutMs = Math.Clamp(node.ConnectTimeoutMs, 100, 600_000),
-                Jitter = 0.2
-            },
-            Heartbeat = new HeartbeatOptions
-            {
-                Enabled = node.HeartbeatEnabled,
-                IntervalMs = Math.Clamp(node.HeartbeatIntervalMs, 100, 3_600_000),
-                Misses = Math.Clamp(node.HeartbeatMisses, 1, 100)
-            },
-            KindSettings = BuildSettings(protocol)
-        });
+                if (!connected)
+                {
+                    issues.Add(new CompileIssue(
+                        "port_required_unconnected",
+                        $"{type.DisplayName} '{node.Label}' 的必连输入 '{port.Label}' 未连接",
+                        node.Id));
+                }
+            }
+        }
     }
 
-    private static void CompileServer(
-        GraphNode node,
-        IReadOnlyDictionary<string, GraphNode> nodes,
-        IReadOnlyDictionary<string, string> reference,
-        IReadOnlyCollection<string> knownKinds,
-        List<ListenerDescriptor> listeners,
-        HashSet<string> usedListenerIds,
+    /// <summary>检查环路：链路必须是有向无环图，否则运行时转发会自激。</summary>
+    private static void CheckNoCycles(
+        OrchestrationGraph graph,
+        IReadOnlyDictionary<string, GraphNode> nodeMap,
         List<CompileIssue> issues)
     {
-        if (!reference.TryGetValue(node.Id, out var protocolNodeId))
-        {
-            issues.Add(new CompileIssue(
-                "server_no_protocol",
-                $"服务端节点 '{node.Label}' 未连接协议节点",
-                node.Id));
-            return;
-        }
+        var adjacency = graph.Nodes.ToDictionary(
+            n => n.Id,
+            _ => new List<string>(),
+            StringComparer.Ordinal);
 
-        var protocol = nodes[protocolNodeId];
-        if (string.IsNullOrWhiteSpace(protocol.KindId) || !knownKinds.Contains(protocol.KindId!))
+        foreach (var e in graph.Edges)
         {
-            return;
-        }
-
-        var listenerId = string.IsNullOrWhiteSpace(node.ListenerId) ? node.Id : node.ListenerId!.Trim();
-        if (!usedListenerIds.Add(listenerId))
-        {
-            issues.Add(new CompileIssue("listener_id_duplicate", $"监听标识 '{listenerId}' 重复", node.Id));
-            return;
-        }
-
-        if (node.Port is < 0 or > 65535)
-        {
-            issues.Add(new CompileIssue(
-                "server_port_range",
-                $"服务端节点 '{node.Label}' 端口 {node.Port} 越界（0..65535）",
-                node.Id));
-            return;
-        }
-
-        listeners.Add(new ListenerDescriptor
-        {
-            ListenerId = listenerId,
-            KindId = protocol.KindId!,
-            Host = string.IsNullOrWhiteSpace(node.Host) ? "0.0.0.0" : node.Host.Trim(),
-            Port = node.Port,
-            MaxSessions = Math.Clamp(node.MaxSessions, 1, 1024),
-            Heartbeat = new HeartbeatOptions
+            if (adjacency.TryGetValue(e.From, out var list))
             {
-                Enabled = node.HeartbeatEnabled,
-                IntervalMs = Math.Clamp(node.HeartbeatIntervalMs, 100, 3_600_000),
-                Misses = Math.Clamp(node.HeartbeatMisses, 1, 100)
-            },
-            KindSettings = BuildSettings(protocol)
-        });
+                list.Add(e.To);
+            }
+        }
+
+        var visiting = new HashSet<string>(StringComparer.Ordinal);
+        var done = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var id in adjacency.Keys)
+        {
+            if (HasCycle(id, adjacency, visiting, done, out var culprit))
+            {
+                var label = nodeMap.TryGetValue(culprit, out var n) ? n.Label : culprit;
+                issues.Add(new CompileIssue("graph_cycle", $"链路存在环路，经过节点 '{label}'", culprit));
+                return;
+            }
+        }
     }
 
-    /// <summary>把协议节点的键值参数转成 <c>JsonElement</c>（引擎只接受 JSON）。</summary>
-    private static JsonElement? BuildSettings(GraphNode protocol)
+    private static bool HasCycle(
+        string id,
+        Dictionary<string, List<string>> adjacency,
+        HashSet<string> visiting,
+        HashSet<string> done,
+        out string culprit)
     {
-        if (protocol.Settings is null || protocol.Settings.Count == 0)
+        culprit = id;
+        if (done.Contains(id))
+        {
+            return false;
+        }
+
+        if (!visiting.Add(id))
+        {
+            return true;
+        }
+
+        foreach (var next in adjacency[id])
+        {
+            if (HasCycle(next, adjacency, visiting, done, out culprit))
+            {
+                return true;
+            }
+        }
+
+        visiting.Remove(id);
+        done.Add(id);
+        return false;
+    }
+
+    /// <summary>由客户端/服务端节点反查它接入的协议节点。</summary>
+    private static string? FindProtocolKind(
+        OrchestrationGraph graph,
+        GraphNode entity,
+        string inputPort,
+        NodeTypeCatalog types)
+    {
+        var edge = graph.Edges.FirstOrDefault(e =>
+            string.Equals(e.To, entity.Id, StringComparison.Ordinal) &&
+            string.Equals(e.ToPort, inputPort, StringComparison.Ordinal));
+
+        if (edge is null)
         {
             return null;
         }
 
-        var json = JsonSerializer.Serialize(protocol.Settings, OrchestrationJsonContext.Default.DictionaryStringString);
-        using var document = JsonDocument.Parse(json);
-        return document.RootElement.Clone();
+        var proto = graph.Nodes.FirstOrDefault(n => n.Id == edge.From);
+        if (proto is null)
+        {
+            return null;
+        }
+
+        // 兼容旧图：协议节点也可能直接是 out/in 端口
+        var kindId = proto.Get("kindId").Trim();
+        return kindId.Length == 0 ? null : kindId;
     }
 
-    /// <summary>解析 <c>host:port</c>。支持 IPv6 字面量 <c>[::1]:502</c>。</summary>
+    private static CompileResult BuildConfig(
+        OrchestrationGraph graph,
+        NodeTypeCatalog types,
+        IReadOnlyCollection<string> knownKinds,
+        List<CompileIssue> issues)
+    {
+        var devices = new List<DeviceDescriptor>();
+        var listeners = new List<ListenerDescriptor>();
+        var topology = new List<FlowLink>();
+        var usedDeviceIds = new HashSet<string>(StringComparer.Ordinal);
+        var usedListenerIds = new HashSet<string>(StringComparer.Ordinal);
+
+        // 编解码器/处理器/变换/出口节点在链路上传递，仅用于生成拓扑描述。
+        foreach (var node in graph.Nodes)
+        {
+            switch (node.NodeType)
+            {
+                case "client":
+                {
+                    var kindId = FindProtocolKind(graph, node, "codec", types);
+                    if (kindId is null || !knownKinds.Contains(kindId))
+                    {
+                        break; // 已在节点校验中报告
+                    }
+
+                    var deviceId = string.IsNullOrWhiteSpace(node.Get("deviceId"))
+                        ? node.Id
+                        : node.Get("deviceId").Trim();
+                    if (!usedDeviceIds.Add(deviceId))
+                    {
+                        issues.Add(new CompileIssue("device_id_duplicate", $"设备标识 '{deviceId}' 重复", node.Id));
+                        break;
+                    }
+
+                    var endpoints = new List<EndpointDescriptor>();
+                    var eps = node.GetLines("endpoints");
+                    for (var i = 0; i < eps.Length; i++)
+                    {
+                        if (!TryParseEndpoint(eps[i], out var host, out var port, out _))
+                        {
+                            continue;
+                        }
+
+                        endpoints.Add(new EndpointDescriptor { Host = host, Port = port, EndpointId = $"ep{i}" });
+                    }
+
+                    // 客户端自带的下游 codecId（若 codec 节点挂在它下游，由引擎关联）
+                    devices.Add(new DeviceDescriptor
+                    {
+                        DeviceId = deviceId,
+                        KindId = kindId,
+                        Endpoints = [.. endpoints],
+                        Retry = new RetryOptions
+                        {
+                            InitialMs = Math.Clamp(node.GetInt("retryInitialMs", 500), 1, 600_000),
+                            MaxMs = Math.Clamp(node.GetInt("retryMaxMs", 30_000), 1, 3_600_000),
+                            ConnectTimeoutMs = Math.Clamp(node.GetInt("connectTimeoutMs", 3_000), 100, 600_000),
+                            Jitter = 0.2
+                        },
+                        Heartbeat = new HeartbeatOptions { Enabled = node.GetBool("heartbeatEnabled") }
+                    });
+                    break;
+                }
+
+                case "server":
+                {
+                    var kindId = FindProtocolKind(graph, node, "codec", types);
+                    if (kindId is null || !knownKinds.Contains(kindId))
+                    {
+                        break;
+                    }
+
+                    var listenerId = string.IsNullOrWhiteSpace(node.Get("listenerId"))
+                        ? node.Id
+                        : node.Get("listenerId").Trim();
+                    if (!usedListenerIds.Add(listenerId))
+                    {
+                        issues.Add(new CompileIssue("listener_id_duplicate", $"监听标识 '{listenerId}' 重复", node.Id));
+                        break;
+                    }
+
+                    var host = node.Get("host").Trim();
+                    listeners.Add(new ListenerDescriptor
+                    {
+                        ListenerId = listenerId,
+                        KindId = kindId,
+                        Host = host.Length == 0 ? "0.0.0.0" : host,
+                        Port = Math.Clamp(node.GetInt("port", 0), 0, 65535),
+                        MaxSessions = Math.Clamp(node.GetInt("maxSessions", 64), 1, 1024),
+                        Heartbeat = new HeartbeatOptions { Enabled = node.GetBool("heartbeatEnabled") }
+                    });
+                    break;
+                }
+            }
+        }
+
+        // 端口冲突（非 0 端口）
+        var ports = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var l in listeners)
+        {
+            if (l.Port == 0)
+            {
+                continue;
+            }
+
+            var key = l.Host + ":" + l.Port.ToString(CultureInfo.InvariantCulture);
+            if (ports.TryGetValue(key, out var owner))
+            {
+                issues.Add(new CompileIssue("listener_port_conflict", $"监听地址 {key} 与 '{owner}' 冲突", l.ListenerId));
+            }
+            else
+            {
+                ports[key] = l.ListenerId;
+            }
+        }
+
+        // 链路拓扑：从每个客户端/服务端出发，沿连线走一遍，记录节点序列。
+        foreach (var node in graph.Nodes)
+        {
+            if (node.NodeType is not ("client" or "server"))
+            {
+                continue;
+            }
+
+            var outPort = node.NodeType == "client" ? "in" : "conn";
+            var path = new List<string> { node.Id };
+            var current = node.Id;
+            var guard = 0;
+
+            while (guard++ < 64)
+            {
+                var edge = graph.Edges.FirstOrDefault(e =>
+                    string.Equals(e.From, current, StringComparison.Ordinal) &&
+                    (current != node.Id || string.Equals(e.FromPort, outPort, StringComparison.Ordinal)));
+
+                if (edge is null)
+                {
+                    break;
+                }
+
+                var nextNode = graph.Nodes.FirstOrDefault(n => n.Id == edge.To);
+                if (nextNode is null)
+                {
+                    break;
+                }
+
+                path.Add(nextNode.Id);
+                current = nextNode.Id;
+
+                if (nextNode.NodeType is "handler" or "sink")
+                {
+                    break;
+                }
+            }
+
+            topology.Add(new FlowLink(node.Id, [.. path]));
+        }
+
+        if (issues.Count > 0)
+        {
+            return new CompileResult(false, null, issues, [], []);
+        }
+
+        var config = new DriverConfig { Devices = [.. devices], Listeners = [.. listeners] };
+        return new CompileResult(true, config, issues, topology, graph.Edges.Select(e => e.Id).ToArray());
+    }
+
+    /// <summary>解析 <c>host:port</c>，支持 <c>[::1]:502</c>。</summary>
     public static bool TryParseEndpoint(string? text, out string host, out int port, out string? error)
     {
         host = "";
@@ -399,4 +518,25 @@ public static class GraphCompiler
         port = parsed;
         return true;
     }
+
+    /// <summary>只有 kind 注册信息的目录视图（用于不需要其它注册表的场景）。</summary>
+    private sealed class KindOnlyView : INodeTypeCatalogView
+    {
+        private readonly IReadOnlyCollection<string> _kinds;
+
+        public KindOnlyView(IReadOnlyCollection<string> kinds) => _kinds = kinds;
+
+        public bool HasKind(string kindId) => _kinds.Contains(kindId);
+
+        public bool HasCodec(string codecId) => true;
+
+        public bool HasTransform(string transformId) => true;
+
+        public bool HasHandler(string handlerId) => true;
+
+        public bool HasSink(string sinkId) => true;
+    }
 }
+
+/// <summary>一条从链路端点出发的消息流路径（节点 id 序列），供诊断与前端展示。</summary>
+public sealed record FlowLink(string SourceNodeId, IReadOnlyList<string> Path);

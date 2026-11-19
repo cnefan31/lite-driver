@@ -55,7 +55,8 @@ public sealed class OrchestrationServer : IAsyncDisposable
         foreach (var path in new[]
                  {
                      "/", "/index.html", "/api/health", "/api/state", "/api/protocols",
-                     "/api/validate", "/api/apply", "/api/graph"
+                     "/api/validate", "/api/apply", "/api/graph",
+                     "/api/nodetypes", "/api/connectable", "/api/registry"
                  })
         {
             server.AllowAnonymous(path);
@@ -77,6 +78,38 @@ public sealed class OrchestrationServer : IAsyncDisposable
                 _engine.Protocols.Select(p => new ProtocolOption(p.KindId, p.DisplayName, p.Description, p.Fields))
                     .ToArray()),
             OrchestrationJsonContext.Relaxed.ApiEnvelopeProtocolOptionArray));
+
+        server.Map("/api/nodetypes", (req, res) => JsonAsync(res,
+            ApiEnvelope<NodeTypeInfo[]>.Success(BuildNodeTypeInfos()),
+            OrchestrationJsonContext.Relaxed.ApiEnvelopeNodeTypeInfoArray));
+
+        // 判断两个端口能否连接：前端拖线时即时反馈，避免用户连出非法边
+        server.Map("/api/connectable", async (req, res) =>
+        {
+            var body = await req.ReadBodyAsStringAsync(CancellationToken.None).ConfigureAwait(false);
+            var probe = string.IsNullOrWhiteSpace(body)
+                ? null
+                : JsonSerializer.Deserialize(body, OrchestrationJsonContext.Relaxed.ConnectionProbe);
+            if (probe is null)
+            {
+                await FailAsync(res, "请求体不是合法探测请求").ConfigureAwait(false);
+                return;
+            }
+
+            var result = ProbeConnection(probe);
+            await JsonAsync(res,
+                ApiEnvelope<ConnectableResult>.Success(result),
+                OrchestrationJsonContext.Relaxed.ApiEnvelopeConnectableResult).ConfigureAwait(false);
+        });
+
+        server.Map("/api/registry", (req, res) => JsonAsync(res,
+            ApiEnvelope<RegistryOptions>.Success(new RegistryOptions(
+                [.. _engine.Protocols.Select(p => new OptionInfo(p.KindId, p.DisplayName))],
+                [.. _engine.Codecs.Select(c => new OptionInfo(c.CodecId, c.DisplayName))],
+                [.. _engine.Transforms.Select(t => new OptionInfo(t.Id, t.DisplayName))],
+                [.. _engine.Handlers.Select(h => new OptionInfo(h.Id, h.DisplayName))],
+                [.. _engine.Sinks.Select(s => new OptionInfo(s.Id, s.DisplayName))])),
+            OrchestrationJsonContext.Relaxed.ApiEnvelopeRegistryOptions));
 
         server.Map("/api/state", (req, res) => JsonAsync(res,
             ApiEnvelope<OrchestrationStatus>.Success(_engine.Status()),
@@ -195,6 +228,50 @@ public sealed class OrchestrationServer : IAsyncDisposable
         {
             return null;
         }
+    }
+
+    /// <summary>把所有已注册节点类型导出为前端可用的元信息。</summary>
+    private NodeTypeInfo[] BuildNodeTypeInfos() =>
+        [.. _engine.NodeTypes.Types.Select(t => new NodeTypeInfo(
+            t.TypeId,
+            t.DisplayName,
+            t.Description,
+            t.IsSource,
+            [.. t.Ports.Select(p => new PortInfo(
+                p.Id, p.Label, p.Direction.ToString(), p.DataType, p.Required))],
+            [.. t.Fields.Select(f => new FieldInfo(
+                f.Key,
+                f.Label,
+                f.Kind.ToString(),
+                f.DefaultValue,
+                f.Help,
+                [.. (f.Options ?? []).Select(o => new OptionInfo(o.Value, o.Label))],
+                f.OptionsSource))]))];
+
+    /// <summary>判断两个端口能否相连。</summary>
+    private ConnectableResult ProbeConnection(ConnectionProbe probe)
+    {
+        var fromType = _engine.NodeTypes.Find(probe.FromNodeType);
+        var toType = _engine.NodeTypes.Find(probe.ToNodeType);
+        if (fromType is null || toType is null)
+        {
+            return new ConnectableResult(false, "节点类型未注册");
+        }
+
+        var outPort = fromType.Ports.FirstOrDefault(
+            p => p.Direction == PortDirection.Output && p.Id == probe.FromPort);
+        var inPort = toType.Ports.FirstOrDefault(
+            p => p.Direction == PortDirection.Input && p.Id == probe.ToPort);
+
+        if (outPort is null || inPort is null)
+        {
+            return new ConnectableResult(false, "端口不存在");
+        }
+
+        return PortSpec.TypesCompatible(outPort.DataType, inPort.DataType)
+            ? new ConnectableResult(true, null)
+            : new ConnectableResult(false,
+                $"{outPort.DataType} 不能接入 {inPort.DataType}，中间需要转换节点");
     }
 
     /// <summary>用源生成的 JsonTypeInfo 序列化，AOT 下零反射。</summary>
