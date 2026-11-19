@@ -144,19 +144,22 @@ def main():
         failures += fail(f"热更新失败: {r2['issues']}")
     # 轮询等待链路真正建立：客户端 Ready 与入站会话登记不是同一时刻完成，
     # 固定 sleep 在慢速 CI 上会读到 inboundSessions=0。
+    # 热更新后客户端需先断开旧连接、按退避重连到新端口，再等服务端 accept 登记会话。
+    # 这三步在慢速 CI 上可能超过 15 秒，故放宽到 45 秒，并同时要求两者成立。
     st = None
-    deadline = time.time() + 15
+    deadline = time.time() + 45
     while time.time() < deadline:
         st = call("/api/state")
         if st["readyClients"] >= 1 and st["inboundSessions"] >= 1:
             break
         time.sleep(0.5)
 
-    print(f"  readyClients={st['readyClients']} inboundSessions={st['inboundSessions']}")
+    print(f"  readyClients={st['readyClients']} inboundSessions={st['inboundSessions']}"
+          f"（端口 {port}）")
     if st["readyClients"] < 1:
         failures += fail("客户端未就绪")
     if st["inboundSessions"] < 1:
-        failures += fail("服务端未收到会话")
+        failures += fail(f"服务端未收到会话（等待 45s，端口 {port}）")
 
     # 6) 运行期新增服务端节点（不重启），必须经编解码器才合法
     graph["nodes"].append({"id": "srv2", "nodeType": "server", "label": "服务端2",
