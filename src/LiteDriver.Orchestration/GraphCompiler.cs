@@ -200,6 +200,13 @@ public static class GraphCompiler
 
         foreach (var e in graph.Edges)
         {
+            // 写入设备 tx 的边不算「数据回流」：设备把处理结果写回 socket 是正当闭环，
+            // 它与设备 out 上的上报是两条独立的单向通道，不构成运行时自激。
+            if (string.Equals(e.ToPort, "tx", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             if (adjacency.TryGetValue(e.From, out var list))
             {
                 list.Add(e.To);

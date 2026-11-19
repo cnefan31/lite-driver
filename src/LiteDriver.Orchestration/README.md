@@ -58,7 +58,7 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 | 客户端 `client` | 发送 `tx`（可选） | **协议 kindId**、**编解码器 codecId**、端点、退避、心跳 | 上报 `out` |
 | 服务端 `server` | 发送 `tx`（可选） | **协议 kindId**、**编解码器 codecId**、监听地址/端口、最大会话 | 上报 `out` |
 | 变换 `transform` | 消息 `IMessage` | transformId、参数 | 消息 `IMessage` |
-| 处理器 `handler` | 消息 `IMessage` | handlerId、模式 | — |
+| 处理器 `handler` | 消息 `IMessage` | handlerId、模式 | **`ok` / `retry` / `fail` 三个命名输出** |
 | 出口 `sink` | 消息 `Any` | sinkId、目标 | — |
 
 ### 连线只表达数据流
@@ -90,6 +90,22 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 
 `tx` 是可选的：只做数据采集时不接它。接入后即可在编排里表达"下发命令"。
 
+### 处理器的结果路由
+
+处理器不是死胡同：它有三个命名输出，按处理结果分流。
+
+```
+                      ┌── ok    ──► 客户端 tx（结果回写设备）
+设备上报 ──► 处理器 ──┼── retry ──► 重试队列 / 另一设备
+                      └── fail  ──► 告警出口
+```
+
+`mode` 字段决定结果走哪个输出：`log` 与 `echo` 走 `ok`，`fail` 走 `fail`。
+
+**完整闭环**（已实测）：`客户端 out → 处理器 in → 处理器 ok → 客户端 tx → 真实写入 socket`。
+
+注意：写入 `tx` 的边**不计入环路检测**——它是独立单向通道，与 `out` 上的上报不构成运行时自激。
+
 ### 页面上的调试直发
 
 设备节点属性面板里有「调试直发」：输入一段文本，直接用该节点自身的 codec 编码后写入设备，**不经过编排链路**。用于调试阶段快速验证协议与链路是否通。
@@ -104,6 +120,15 @@ POST /api/send
 返回 `status`：`Sent` / `NotReady` / `NoCodec` / `EncodeFailed` / `InvalidNode` / `WriteFailed`。
 
 > `Sent` 只表示字节已交给内核，**不代表设备已执行**。
+
+处理器的模拟路由：
+
+```http
+POST /api/process
+{ "nodeId": "h", "text": "输入消息" }
+```
+
+处理器自身的 `EncodedFailed` 会被如实返回（例如下游 codec 无法编码该消息），不会静默吞掉。
 
 ### 文本直发的前提
 

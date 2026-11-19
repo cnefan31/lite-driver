@@ -60,7 +60,12 @@
   .canvas-wrap{position:relative;overflow:hidden;
     background:radial-gradient(circle at 1px 1px,rgba(255,255,255,.045) 1px,transparent 0) 0 0/20px 20px,
     var(--canvas)}
-  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  /* 不能用 none：父级 none 会阻断子 path 的 pointer-events:stroke 命中，
+     导致连线点不中、删不掉。改为 auto，仅让带 data-edge 的厚热区可命中。 */
+  /* svg 必须位于 .canvas 之上才能收到点击（否则被 canvas 遮挡，连线永远删不掉）。
+     整体 pointer-events:none 让节点与端口照常可操作，仅 data-edge 热区开启 stroke 命中。 */
+  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3}
+  svg.wires path[data-edge]{pointer-events:stroke}
   .canvas{position:absolute;inset:0}
 
   /* 节点 */
@@ -82,11 +87,13 @@
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ports{display:flex;justify-content:space-between;padding:0 0 6px;min-height:14px}
   .port-col{display:flex;flex-direction:column;gap:3px}
-  .port{display:flex;align-items:center;gap:5px;font:9.5px var(--mono);color:#6f7a8c;
-    cursor:crosshair;padding:1px 6px;border-radius:4px;transition:.12s}
+  .port{display:flex;align-items:center;gap:6px;font:10px var(--mono);color:#8b96a8;
+    cursor:crosshair;padding:4px 7px;border-radius:5px;transition:.12s;
+    min-height:20px;-webkit-user-select:none;user-select:none}
+  .port .plabel{white-space:nowrap}
   .port:hover{background:rgba(76,141,255,.14);color:var(--accent)}
-  .port .pdot{width:8px;height:8px;border-radius:50%;background:var(--panel-2);
-    border:1.5px solid var(--line-2);flex:0 0 8px}
+  .port .pdot{width:11px;height:11px;border-radius:50%;background:var(--panel-2);
+    border:2px solid var(--line-2);flex:0 0 11px;transition:.12s}
   .port.out{flex-direction:row-reverse;text-align:right}
   .port.linked .pdot{background:var(--accent);border-color:var(--accent)}
   .port.compat .pdot{background:var(--ok);border-color:var(--ok);box-shadow:0 0 6px var(--ok)}
@@ -128,6 +135,10 @@
   .drawer .list div{color:#939dae;word-break:break-all}
   .drawer .list .k{color:var(--accent)} .drawer .list .bad{color:var(--bad)}
 
+  .linkhint{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:30;
+    background:rgba(76,141,255,.16);border:1px solid var(--accent);color:#cfe2ff;
+    padding:6px 14px;border-radius:7px;font-size:12px;display:none;pointer-events:none}
+  .linkhint.show{display:block}
   .toast{position:fixed;left:50%;top:62px;transform:translateX(-50%);padding:8px 16px;
     border-radius:7px;font-size:12px;font-weight:600;z-index:50;opacity:0;transition:.2s;
     pointer-events:none;max-width:60%}
@@ -165,8 +176,9 @@
   </aside>
 
   <div class="canvas-wrap" id="canvasWrap">
-    <svg class="wires" id="wires"></svg>
     <div class="canvas" id="canvas"></div>
+    <svg class="wires" id="wires"></svg>
+    <div class="linkhint" id="linkHint">松开以连接到高亮的输入端口 · Esc 取消</div>
     <div class="drawer" id="drawer">
       <h4><span>事件流</span><span id="drawerClose" style="cursor:pointer">✕</span></h4>
       <div class="list" id="eventList">（暂无）</div>
@@ -280,12 +292,12 @@ function renderNodes(){
     const portHtml = `<div class="ports">
         <div class="port-col">${ins.map(p => `
           <div class="port in" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="in"
-               data-type="${esc(p.dataType)}" title="${esc(p.label)} · ${esc(p.dataType)}${p.required?' · 必连':''}">
-            <span class="pdot"></span><span>${esc(p.label)}</span></div>`).join('')}</div>
+               data-type="${esc(p.dataType)}" title="可接入 · ${esc(p.label)} · ${esc(p.dataType)}${p.required?' · 必连':''}">
+            <span class="pdot"></span><span class="plabel">${esc(p.label)}</span></div>`).join('')}</div>
         <div class="port-col">${outs.map(p => `
           <div class="port out" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="out"
-               data-type="${esc(p.dataType)}" title="${esc(p.label)} · ${esc(p.dataType)}">
-            <span class="pdot"></span><span>${esc(p.label)}</span></div>`).join('')}</div>
+               data-type="${esc(p.dataType)}" title="拖出以连接 · ${esc(p.label)} · ${esc(p.dataType)}">
+            <span class="pdot"></span><span class="plabel">${esc(p.label)}</span></div>`).join('')}</div>
       </div>`;
     return `<div class="node${sel}${err}" data-id="${n.id}" data-type="${esc(n.nodeType)}"
                  style="left:${n.x}px;top:${n.y}px">
@@ -328,8 +340,10 @@ function drawWires(){
     if(!a || !b) continue;
     const dx = Math.max(46, Math.abs(b.x-a.x)*0.5);
     const d = `M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${b.x-dx} ${b.y}, ${b.x} ${b.y}`;
-    html += `<path d="${d}" stroke="url(#g)" stroke-width="2" fill="none" opacity=".9"/>`;
-    html += `<path d="${d}" stroke="transparent" stroke-width="14" fill="none"
+    html += `<path d="${d}" stroke="url(#g)" stroke-width="2" fill="none" opacity=".9"
+              style="pointer-events:none"/>`;
+    // 删除热区加宽到 24，并在 hover 时高亮，避免"点不中"
+    html += `<path d="${d}" stroke="transparent" stroke-width="24" fill="none"
               style="pointer-events:stroke;cursor:pointer" data-edge="${esc(e.id)}"/>`;
   }
   if(state.linking){
@@ -393,6 +407,7 @@ canvas.addEventListener('pointerdown', ev => {
       x: ev.clientX - wr.left, y: ev.clientY - wr.top
     };
     highlightCompatible(state.linking.dataType);
+    $('linkHint').classList.add('show');
     drawWires();
     return;
   }
@@ -425,7 +440,18 @@ function highlightCompatible(dataType){
 }
 function clearHighlight(){
   canvas.querySelectorAll('.port').forEach(p => p.classList.remove('compat','incompat'));
+  $('linkHint').classList.remove('show');
 }
+
+// Esc 取消连线
+window.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && state.linking){
+    state.linking = null;
+    clearHighlight();
+    drawWires();
+    setMsg('已取消连线');
+  }
+});
 
 canvas.addEventListener('pointermove', ev => {
   if(state.linking){
@@ -492,13 +518,44 @@ async function tryConnect(link, toNode, toPort){
   setMsg(`已连接 ${from.label} → ${to.label}`);
 }
 
+/** 删除连线：左键点击或右键都可以，且不再弹确认（连线可重连，误删成本低）。 */
+function removeEdge(id){
+  const before = state.edges.length;
+  state.edges = state.edges.filter(e => e.id !== id);
+  if(state.edges.length !== before){
+    renderNodes();
+    setMsg('已删除连线（可重新拖动端口连接）');
+  }
+}
+
 wires.addEventListener('click', ev => {
   const id = ev.target.dataset && ev.target.dataset.edge;
+  if(id) removeEdge(id);
+});
+
+wires.addEventListener('contextmenu', ev => {
+  const id = ev.target.dataset && ev.target.dataset.edge;
   if(!id) return;
-  if(!confirm('删除这条连线？')) return;
-  state.edges = state.edges.filter(e => e.id !== id);
-  renderNodes();
-  setMsg('已删除连线');
+  ev.preventDefault();
+  removeEdge(id);
+});
+
+// hover 连线时高亮，提示可点击删除
+let hoverEdge = null;
+wires.addEventListener('pointermove', ev => {
+  const id = ev.target.dataset && ev.target.dataset.edge;
+  if(id === hoverEdge) return;
+  hoverEdge = id;
+  wires.querySelectorAll('path[stroke^="url"]').forEach(p => p.setAttribute('opacity','.9'));
+  if(id){
+    const idx = [...wires.querySelectorAll('path[data-edge]')].findIndex(p => p.dataset.edge === id);
+    const vis = wires.querySelectorAll('path[stroke^="url"]')[idx];
+    if(vis){ vis.setAttribute('opacity','1'); vis.setAttribute('stroke-width','3'); }
+    wires.style.cursor = 'pointer';
+  } else {
+    wires.querySelectorAll('path[stroke^="url"]').forEach(p => p.setAttribute('stroke-width','2'));
+    wires.style.cursor = 'default';
+  }
 });
 
 /* ---------------- 属性面板 ---------------- */
@@ -522,10 +579,24 @@ function renderProps(){
   if(!n){ box.innerHTML = '<div class="empty">选中一个节点以编辑<br>或从左侧拖入节点</div>'; return; }
 
   const t = typeOf(n.nodeType);
+
+  // 处理器：显示三个结果输出各自连到哪，便于确认路由
+  let routeInfo = '';
+  if(n.nodeType === 'handler'){
+    const rows = (t?t.ports.filter(p=>p.direction==='Output'):[]).map(p => {
+      const e = state.edges.find(x => x.from === n.id && x.fromPort === p.id);
+      const target = e ? nodeById(e.to) : null;
+      const label = target ? (target.label || target.nodeType) : '未连接';
+      return `<div class="pv"><span>▶ ${esc(p.label)}</span><b>${esc(label)}</b></div>`;
+    }).join('');
+    routeInfo = `<div class="ports-view" style="margin-top:-4px">${rows}</div>`;
+  }
+
   let html = `<div class="ports-view">
       ${(t?t.ports:[]).map(p => `<div class="pv"><span>${p.direction==='Input'?'◀':'▶'} ${esc(p.label)}</span>
         <b>${esc(p.dataType)}${p.required?' *':''}</b></div>`).join('')}
     </div>
+    ${routeInfo}
     <div class="field"><label>显示名</label><input id="p-label" value="${esc(n.label)}"></div>`;
 
   for(const f of (t?t.fields:[])){
@@ -556,6 +627,17 @@ function renderProps(){
     }
   }
 
+  // 处理器：模拟一次处理，按结果沿对应输出路由（验证闭环）
+  if(n.nodeType === 'handler'){
+    html += `<div class="tx-box">
+        <div class="tx-title">模拟处理并路由</div>
+        <div class="hint" style="margin-bottom:6px">输入一条消息，按「处理模式」产生结果并沿对应输出端口下发到下游设备。</div>
+        <textarea id="p-procinput" rows="2" placeholder="输入消息"></textarea>
+        <button class="ghost" id="p-procrun" style="width:100%;margin-top:6px">执行并路由</button>
+        <div class="hint" id="p-procresult"></div>
+      </div>`;
+  }
+
   // 设备节点：调试直发（不经编排链路，直接写入该设备 socket）
   if(n.nodeType === 'client' || n.nodeType === 'server'){
     html += `<div class="tx-box">
@@ -579,6 +661,21 @@ function renderProps(){
       renderNodes();
     }, (f.kind==='Select'||f.kind==='Bool') ? 'change' : 'input');
   }
+  const procBtn = $('p-procrun');
+  if(procBtn){
+    procBtn.onclick = async () => {
+      const text = $('p-procinput').value;
+      const box = $('p-procresult');
+      box.textContent = '执行中…';
+      try{
+        const rs = await api('/api/process', { nodeId: n.id, text });
+        if(!rs.length){ box.textContent = '没有下游可路由'; return; }
+        box.textContent = rs.map(r => `${r.nodeId}:${r.status}${r.ok ? ` ${r.bytesWritten}B` : ` (${r.error||''})`}`).join(' | ');
+        toast(rs.every(r=>r.ok) ? '已路由' : '部分失败', rs.every(r=>r.ok) ? 'ok' : 'bad');
+      }catch(e){ box.textContent = '异常：' + e.message; }
+    };
+  }
+
   const txBtn = $('p-txsend');
   if(txBtn){
     txBtn.onclick = async () => {

@@ -44,6 +44,8 @@ namespace LiteDriver.Orchestration;
 [JsonSerializable(typeof(NodeSendRequest))]
 [JsonSerializable(typeof(NodeSendReport))]
 [JsonSerializable(typeof(ApiEnvelope<NodeSendReport>))]
+[JsonSerializable(typeof(ApiEnvelope<NodeSendReport[]>))]
+[JsonSerializable(typeof(NodeSendReport[]))]
 [JsonSerializable(typeof(ConnectableResult))]
 [JsonSerializable(typeof(ConnectionProbe))]
 [JsonSerializable(typeof(FlowLink))]

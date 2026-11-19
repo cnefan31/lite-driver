@@ -47,3 +47,9 @@ public sealed record NodeSendResult(
     public static NodeSendResult Fail(SendStatus status, string nodeId, string error) =>
         new(status, nodeId, 0, 0, error);
 }
+
+/// <summary>
+/// 处理器产生的结果消息。
+/// 下游设备若实现了 <c>ITextPayloadCodec</c>，引擎会改用文本消息构造，文本见 <paramref name="Text"/>。
+/// </summary>
+public sealed record HandlerResult(string HandlerNodeId, string Mode, string Port, string Text);

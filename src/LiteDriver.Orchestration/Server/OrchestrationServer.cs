@@ -56,7 +56,7 @@ public sealed class OrchestrationServer : IAsyncDisposable
                  {
                      "/", "/index.html", "/api/health", "/api/state", "/api/protocols",
                      "/api/validate", "/api/apply", "/api/graph",
-                     "/api/nodetypes", "/api/connectable", "/api/registry", "/api/send"
+                     "/api/nodetypes", "/api/connectable", "/api/registry", "/api/send", "/api/process"
                  })
         {
             server.AllowAnonymous(path);
@@ -131,6 +131,27 @@ public sealed class OrchestrationServer : IAsyncDisposable
                     result.Ok, result.NodeId, result.Status.ToString(),
                     result.BytesWritten, result.SessionCount, result.Error)),
                 OrchestrationJsonContext.Relaxed.ApiEnvelopeNodeSendReport).ConfigureAwait(false);
+        });
+
+        // 给处理器喂一条文本并按其结果路由到下游（验证闭环）
+        server.Map("/api/process", async (req, res) =>
+        {
+            var body = await req.ReadBodyAsStringAsync(CancellationToken.None).ConfigureAwait(false);
+            var dto = string.IsNullOrWhiteSpace(body)
+                ? null
+                : JsonSerializer.Deserialize(body, OrchestrationJsonContext.Relaxed.NodeSendRequest);
+            if (dto is null || string.IsNullOrWhiteSpace(dto.NodeId))
+            {
+                await FailAsync(res, "请求体缺少 nodeId").ConfigureAwait(false);
+                return;
+            }
+
+            var results = await _engine.ProcessTextAsync(dto.NodeId, dto.Text ?? "", CancellationToken.None)
+                .ConfigureAwait(false);
+            await JsonAsync(res,
+                ApiEnvelope<NodeSendReport[]>.Success([.. results.Select(r => new NodeSendReport(
+                    r.Ok, r.NodeId, r.Status.ToString(), r.BytesWritten, r.SessionCount, r.Error))]),
+                OrchestrationJsonContext.Relaxed.ApiEnvelopeNodeSendReportArray).ConfigureAwait(false);
         });
 
         server.Map("/api/state", (req, res) => JsonAsync(res,

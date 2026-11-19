@@ -134,17 +134,63 @@ public sealed class OrchestrationCompilerTests
     }
 
     [Fact]
-    public void ShouldRejectHandlerToHandler()
+    public void Handler_ShouldExposeThreeNamedOutputs()
     {
-        // handler 没有输出端口，连不出去
-        var g = Graph([Client("c"), Handler("h1"), Handler("h2")],
-            ("c", "out", "h1", "in"),
-            ("h1", "out", "h2", "in"));
+        var t = Types.Find("handler")!;
+        var outs = t.Ports.Where(p => p.Direction == PortDirection.Output).Select(p => p.Id).ToArray();
+        Assert.Equal(["ok", "retry", "fail"], outs);
+    }
+
+    [Fact]
+    public void Handler_ShouldNotAllowLegacyOutPort()
+    {
+        // 旧的单一 out 端口已不存在，应由 ok 承接
+        var g = Graph([Client("c"), Handler("h")],
+            ("c", "out", "h", "in"),
+            ("h", "out", "c", "tx"));
+
+        var result = Compile(g);
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "edge_port_missing");
+    }
+
+    [Fact]
+    public void HandlerResult_ShouldRouteBackToDeviceTx()
+    {
+        // 闭环：客户端 out -> 处理器 in -> ok -> 客户端 tx
+        var g = Graph([Client("c"), Handler("h")],
+            ("c", "out", "h", "in"),
+            ("h", "ok", "c", "tx"));
 
         var result = Compile(g);
 
+        Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
+    }
+
+    [Fact]
+    public void TxWriteBack_ShouldNotCountAsCycle()
+    {
+        // 写入 tx 是独立单向通道，不应被环路检测判为自激
+        var g = Graph([Client("c"), Handler("h")],
+            ("c", "out", "h", "in"),
+            ("h", "ok", "c", "tx"));
+
+        var result = Compile(g);
+        Assert.DoesNotContain(result.Issues, i => i.Code == "graph_cycle");
+    }
+
+    [Fact]
+    public void ShouldRejectTrueCycleBetweenHandlers()
+    {
+        // 处理器 ok -> 处理器 in 的真回环仍应被拒
+        var g = Graph([Client("c"), Handler("h1"), Handler("h2")],
+            ("c", "out", "h1", "in"),
+            ("h1", "ok", "h2", "in"),
+            ("h2", "ok", "h1", "in"));
+
+        var result = Compile(g);
         Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "edge_port_missing");
+        Assert.Contains(result.Issues, i => i.Code == "graph_cycle");
     }
 
     [Fact]

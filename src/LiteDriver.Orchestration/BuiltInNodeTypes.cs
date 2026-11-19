@@ -195,27 +195,39 @@ public static class BuiltInNodeTypes
         }
     }
 
-    /// <summary>处理器节点：业务逻辑终点。</summary>
+    /// <summary>
+    /// 处理器节点：执行业务逻辑，并按处理结果路由到不同输出。
+    /// <para>
+    /// 三个命名输出对应三种结果：<c>ok</c>（成功）、<c>retry</c>（可重试失败）、
+    /// <c>fail</c>（确定失败）。下游可分别接到不同设备节点或出口，
+    /// 形成「设备上报 → 处理 → 结果回写/ 分流」的闭环。
+    /// </para>
+    /// </summary>
     public sealed class HandlerType : INodeType
     {
         public string TypeId => "handler";
 
         public string DisplayName => "处理器";
 
-        public string Description => "接收业务消息并执行业务逻辑。输入是 IMessage，因此不能直连客户端（中间必须经编解码器）。";
+        public string Description => "执行业务逻辑，按结果路由：成功/可重试/失败三个输出可分别接不同下游。";
 
         public bool IsSource => false;
 
         public IReadOnlyList<PortSpec> Ports { get; } =
         [
-            new PortSpec("in", "业务消息", PortDirection.Input, PortTypes.Message, required: true)
+            new PortSpec("in", "业务消息", PortDirection.Input, PortTypes.Message, required: true),
+            new PortSpec("ok", "成功", PortDirection.Output, PortTypes.Message),
+            new PortSpec("retry", "可重试", PortDirection.Output, PortTypes.Message),
+            new PortSpec("fail", "失败", PortDirection.Output, PortTypes.Message)
         ];
 
         public IReadOnlyList<NodeField> Fields { get; } =
         [
             new NodeField("handlerId", "处理器", NodeFieldKind.Select, "", "宿主注册的处理器", OptionsSource: "handlers"),
-            new NodeField("mode", "处理模式", NodeFieldKind.Select, "log", "",
-                [new NodeFieldOption("log", "记录日志"), new NodeFieldOption("echo", "回显应答")])
+            new NodeField("mode", "处理模式", NodeFieldKind.Select, "log", "决定结果走哪个输出",
+                [new NodeFieldOption("log", "只记录日志（走 ok）"),
+                 new NodeFieldOption("echo", "回显：把输入回传（走 ok）"),
+                 new NodeFieldOption("fail", "固定失败（走 fail）")])
         ];
 
         public string? Validate(GraphNode node, INodeTypeCatalogView catalog)

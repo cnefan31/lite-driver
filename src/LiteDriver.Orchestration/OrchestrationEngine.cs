@@ -236,6 +236,174 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
     }
 
     /// <summary>
+    /// 从某个处理器节点的指定输出广播一条消息给下游。
+    /// <para>
+    /// 沿该输出端口的所有连线，把消息写进下游设备节点的发送通道（<c>tx</c>），
+    /// 或继续传给下游处理器。这就是「处理结果回写设备」的闭环入口。
+    /// </para>
+    /// </summary>
+    /// <param name="handlerNodeId">处理器节点 id。</param>
+    /// <param name="outputPort">输出端口：ok / retry / fail。</param>
+    /// <param name="message">处理结果消息。</param>
+    /// <param name="ct">取消令牌。</param>
+    public async ValueTask<IReadOnlyList<NodeSendResult>> EmitFromHandlerAsync(
+        string handlerNodeId,
+        string outputPort,
+        PayloadMessage message,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(handlerNodeId);
+
+        var graph = CurrentGraph;
+        var handler = graph.Nodes.FirstOrDefault(n => n.Id == handlerNodeId);
+        if (handler is null || handler.NodeType != "handler")
+        {
+            return [NodeSendResult.Fail(SendStatus.InvalidNode, handlerNodeId, "不是处理器节点")];
+        }
+
+        var results = new List<NodeSendResult>();
+
+        // 沿该输出端口的所有连线，逐个下游派发
+        foreach (var edge in graph.Edges.Where(e =>
+                     e.From == handlerNodeId &&
+                     string.Equals(e.FromPort, outputPort, StringComparison.Ordinal)))
+        {
+            var target = graph.Nodes.FirstOrDefault(n => n.Id == edge.To);
+            if (target is null)
+            {
+                continue;
+            }
+
+            if (target.NodeType is "client" or "server")
+            {
+                results.Add(await SendAsync(target.Id, message, ct).ConfigureAwait(false));
+                continue;
+            }
+
+            if (target.NodeType == "sink")
+            {
+                RecordEvent(new DriverEvent
+                {
+                    Kind = DriverEventKind.SessionClosed,
+                    Direction = ConnectionDirection.Inbound,
+                    DeviceId = target.Get("sinkId"),
+                    Detail = $"sink:{outputPort}",
+                    TimestampTicks = DateTime.UtcNow.Ticks
+                });
+                results.Add(NodeSendResult.Sent(target.Id, 0, 0));
+                continue;
+            }
+
+            // 传给下游处理器：按其输入继续路由（此处仅记录，不做递归处理）
+            results.Add(NodeSendResult.Sent(target.Id, 0, 0));
+        }
+
+        if (results.Count == 0)
+        {
+            results.Add(NodeSendResult.Fail(
+                SendStatus.NotReady, handlerNodeId, $"输出 '{outputPort}' 未连接任何下游"));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// 模拟一次处理并路由：给处理器喂一条消息，按 <c>mode</c> 产生结果并沿对应输出下发。
+    /// 用于页面调试与验证「设备上报 → 处理 → 结果回写」闭环。
+    /// </summary>
+    public async ValueTask<IReadOnlyList<NodeSendResult>> ProcessAndRouteAsync(
+        string handlerNodeId,
+        PayloadMessage input,
+        CancellationToken ct = default)
+    {
+        var graph = CurrentGraph;
+        var handler = graph.Nodes.FirstOrDefault(n => n.Id == handlerNodeId);
+        if (handler is null || handler.NodeType != "handler")
+        {
+            return [NodeSendResult.Fail(SendStatus.InvalidNode, handlerNodeId, "不是处理器节点")];
+        }
+
+        var mode = handler.Get("mode");
+        var port = mode switch
+        {
+            "fail" => "fail",
+            _ => "ok"
+        };
+
+        // echo 模式把输入原样回传；其余模式产生一条结果消息
+        var output = input.HasValue && mode == "echo"
+            ? input
+            : PayloadMessage.From(new HandlerResult(handlerNodeId, mode, port, mode), "handler-result");
+
+        return await EmitFromHandlerAsync(handlerNodeId, port, output, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 给处理器喂一段文本，按 <c>mode</c> 产生结果并沿对应输出路由。
+    /// 文本需能被该处理器下游设备的 codec 理解（echo 模式直接回传文本）。
+    /// </summary>
+    public async ValueTask<IReadOnlyList<NodeSendResult>> ProcessTextAsync(
+        string handlerNodeId,
+        string text,
+        CancellationToken ct = default)
+    {
+        var graph = CurrentGraph;
+        var handler = graph.Nodes.FirstOrDefault(n => n.Id == handlerNodeId);
+        if (handler is null || handler.NodeType != "handler")
+        {
+            return [NodeSendResult.Fail(SendStatus.InvalidNode, handlerNodeId, "不是处理器节点")];
+        }
+
+        var mode = handler.Get("mode");
+        var port = mode == "fail" ? "fail" : "ok";
+
+        // 处理结果用下游设备的文本 codec 构造，确保能被编码后写回 socket。
+        // 若 mode=echo，把输入文本原样回传；否则回传「处理后的文本」。
+        var outputText = mode == "echo" ? text : $"[{port}] {text}";
+        var message = BuildOutboundMessage(graph, handlerNodeId, port, outputText);
+        return await EmitFromHandlerAsync(handlerNodeId, port, message, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 为指定输出端口的下游设备构造一条可编码的文本消息。
+    /// 处理器自身不绑定 codec，实际编码由下游设备的 codec 完成。
+    /// </summary>
+    private PayloadMessage BuildOutboundMessage(
+        OrchestrationGraph graph,
+        string handlerNodeId,
+        string outputPort,
+        string text)
+    {
+        var edge = graph.Edges.FirstOrDefault(e =>
+            e.From == handlerNodeId && string.Equals(e.FromPort, outputPort, StringComparison.Ordinal));
+        var downstream = edge is null ? null : graph.Nodes.FirstOrDefault(n => n.Id == edge.To);
+
+        if (downstream is not null && downstream.NodeType is "client" or "server")
+        {
+            var codecId = downstream.Get("codecId").Trim();
+            var reg = _codecs.FirstOrDefault(c => string.Equals(c.CodecId, codecId, StringComparison.Ordinal));
+            if (reg is not null)
+            {
+                try
+                {
+                    var codec = reg.Factory(PayloadCodecContext.CreateForStandalone(
+                        codecId, downstream.Id, ConnectionDirection.Outbound));
+                    if (codec is ITextPayloadCodec textCodec)
+                    {
+                        return textCodec.FromText(text);
+                    }
+                }
+                catch (Exception)
+                {
+                    // 回落到通用结果消息，由下游编解码失败时如实报错。
+                }
+            }
+        }
+
+        return PayloadMessage.From(new HandlerResult(handlerNodeId, "text", outputPort, text), "handler-result");
+    }
+
+    /// <summary>
     /// 向某个设备节点（client / server）发送一条业务消息。
     /// <para>
     /// 流程：查节点 → 用节点自身 codec 把消息编码成帧载荷 → 写入 socket。
