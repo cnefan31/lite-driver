@@ -6,17 +6,11 @@ namespace LiteDriver.Orchestration;
 /// </summary>
 public static class PortTypes
 {
-    /// <summary>原始字节流：连接层拿到的裸帧（含协议头）。</summary>
-    public const string Frame = "IFrame";
+    /// <summary>原始帧：连接层读到的裸字节（含协议头，未经编解码器解析）。</summary>
+    public const string RawFrame = "RawFrame";
 
-    /// <summary>解码后的业务消息。</summary>
+    /// <summary>解码后的业务消息：编解码器之后的所有处理都在这个形态上进行。</summary>
     public const string Message = "IMessage";
-
-    /// <summary>
-    /// 待发送的业务消息。与 <see cref="Message"/> 的值相同，但语义是「要写入设备」。
-    /// 单独命名是为了让端口标签与校验提示能区分收发方向。
-    /// </summary>
-    public const string Outbound = "IMessage";
 
     /// <summary>任意类型：仅用于能接受一切的终端节点，连线时视为通配。</summary>
     public const string Any = "Any";

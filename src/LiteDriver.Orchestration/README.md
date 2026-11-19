@@ -50,99 +50,48 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 
 ## 节点与端口（连接约束）
 
-**每个节点都是独立的**：各自带输入/输出，用来承接上一个节点的输出、向下一个节点输出。
-**协议与编解码器是设备节点自身的属性**，不从外部节点拉线绑定——每个客户端/服务端独立维护自己的协议，互不影响。
+**端口数据类型是强契约**：前一个节点的输出类型必须与后一个节点的输入类型一致，否则连线被拒。连线同时有**方向**（输出 → 输入，界面上带箭头）。
 
-| 节点类型 | 输入 | 自身属性 | 输出 |
-| --- | --- | --- | --- |
-| 客户端 `client` | 发送 `tx`（可选） | **协议 kindId**、**编解码器 codecId**、端点、退避、心跳 | 上报 `out` |
-| 服务端 `server` | 发送 `tx`（可选） | **协议 kindId**、**编解码器 codecId**、监听地址/端口、最大会话 | 上报 `out` |
-| 变换 `transform` | 消息 `IMessage` | transformId、参数 | 消息 `IMessage` |
-| 处理器 `handler` | 消息 `IMessage` | handlerId、模式 | **`ok` / `retry` / `fail` 三个命名输出** |
-| 出口 `sink` | 消息 `Any` | sinkId、目标 | — |
+| 节点类型 | 输入 | 输出 |
+| --- | --- | --- |
+| 客户端 `client` | `tx` 发送帧（RawFrame） | `out` 原始帧（RawFrame） |
+| 服务端 `server` | `tx` 发送帧（RawFrame） | `out` 原始帧（RawFrame） |
+| 编解码器 `codec` | `in` 原始帧、`enc` 待编码 | `out` 业务消息、`frame` 编码帧 |
+| 变换 `transform` | `in` 业务消息 | `out` 业务消息 |
+| 处理器 `handler` | `in` 业务消息 | `ok` / `retry` / `fail` 业务消息 |
+| 出口 `sink` | `in` 任意 | — |
 
-### 连线只表达数据流
+### 类型约束拦住什么
 
-```
-客户端 [自带协议+编解码器] ──IMessage──► 处理器
-                          └─IMessage──► 变换 ──IMessage──► 处理器
-服务端 [自带协议+编解码器] ──IMessage──► 出口
-```
-
-连线不代表"绑定"，只代表"数据从这里流到那里"。因此：
-
-- 两个客户端可以各自用不同协议，互不干扰
-- 不需要协议节点，也不存在"协议绑定"关系
-- 端口类型仍然约束数据流（`IMessage` 不能接只收 `IFrame` 的端口），但当前内置节点里设备已统一输出 `IMessage`
-
-### 设备节点的收发
-
-设备是链路起点，但 TCP 是双向的，所以设备有两个端口：
-
-- **`out`（上报）**：设备读到的数据经自身 codec 解码后，作为业务消息向下游输出
-- **`tx`（发送，可选）**：上游写入的消息经**同一 codec** 编码、由协议组帧，写入 socket
+设备产出 `RawFrame`，处理器只收 `IMessage`，因此：
 
 ```
-                       ┌── out ──► 处理器 / 出口
-客户端 [自带协议+codec] ─┤
-                       └── tx  ◄── 上游节点的消息（写入设备）
+客户端 [RawFrame] ──✗──► 处理器 [IMessage]      类型不匹配，被拒
+客户端 [RawFrame] ──✓──► 编解码器 ──✓──► 处理器
 ```
 
-`tx` 是可选的：只做数据采集时不接它。接入后即可在编排里表达"下发命令"。
-
-### 处理器的结果路由
-
-处理器不是死胡同：它有三个命名输出，按处理结果分流。
+同理，处理结果是 `IMessage`，设备 `tx` 要 `RawFrame`，**必须经编解码器的编码方向**才能写回：
 
 ```
-                      ┌── ok    ──► 客户端 tx（结果回写设备）
-设备上报 ──► 处理器 ──┼── retry ──► 重试队列 / 另一设备
-                      └── fail  ──► 告警出口
+处理器 ok ──✗──► 客户端 tx
+处理器 ok ──✓──► 编解码器 enc ──✓──► frame ──✓──► 客户端 tx
 ```
 
-`mode` 字段决定结果走哪个输出：`log` 与 `echo` 走 `ok`，`fail` 走 `fail`。
+### 编解码器的双向能力
 
-**完整闭环**（已实测）：`客户端 out → 处理器 in → 处理器 ok → 客户端 tx → 真实写入 socket`。
+| 输入 | 输出 | 语义 |
+| --- | --- | --- |
+| `in` | `out` | 解码：原始帧 → 业务消息 |
+| `enc` | `frame` | 编码：业务消息 → 原始帧 |
 
-注意：写入 `tx` 的边**不计入环路检测**——它是独立单向通道，与 `out` 上的上报不构成运行时自激。
+两个方向的输入都不强制必连，可只用其一。
 
-### 页面上的调试直发
+### 连线方向
 
-设备节点属性面板里有「调试直发」：输入一段文本，直接用该节点自身的 codec 编码后写入设备，**不经过编排链路**。用于调试阶段快速验证协议与链路是否通。
-
-对应 API：
-
-```http
-POST /api/send
-{ "nodeId": "cli", "text": "HELLO" }
-```
-
-返回 `status`：`Sent` / `NotReady` / `NoCodec` / `EncodeFailed` / `InvalidNode` / `WriteFailed`。
-
-> `Sent` 只表示字节已交给内核，**不代表设备已执行**。
-
-处理器的模拟路由：
-
-```http
-POST /api/process
-{ "nodeId": "h", "text": "输入消息" }
-```
-
-处理器自身的 `EncodedFailed` 会被如实返回（例如下游 codec 无法编码该消息），不会静默吞掉。
-
-### 文本直发的前提
-
-引擎无法凭空构造任意 codec 的消息类型（如 `TextMessage`），因此需要文本互操作的 codec 实现 `ITextPayloadCodec`：
-
-```csharp
-public sealed class TextCodec : IPayloadCodec, ITextPayloadCodec
-{
-    public PayloadMessage FromText(string text) => PayloadMessage.From(new TextMessage(text), "text");
-    // ...
-}
-```
-
-未实现该接口时，`/api/send` 会返回 `EncodeFailed` 并说明原因，不会静默失败。
+- 只能从**输出端口**拖向**输入端口**
+- 从输入端口起拖会明确提示「这是输入端口，不能从它起拖」
+- 连线带箭头，标明数据流向
+- 连线可点击或右键删除
 
 ## 扩展自己的节点类型
 

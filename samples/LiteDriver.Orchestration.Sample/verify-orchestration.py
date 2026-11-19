@@ -35,54 +35,78 @@ def main():
     types = call("/api/nodetypes")
     ids = [t["typeId"] for t in types]
     print(f"节点类型 {len(types)} 种: {ids}")
-    for need in ("client", "server", "transform", "handler", "sink"):
+    for need in ("client", "codec", "server", "transform", "handler", "sink"):
         if need not in ids:
             failures += fail(f"缺少节点类型 {need}")
-    for gone in ("protocol", "codec"):
-        if gone in ids:
-            failures += fail(f"协议/编解码器不应再是独立节点: {gone}")
+    if "protocol" in ids:
+        failures += fail("协议不应再是独立节点（它是设备自身字段）")
 
     # 2) 设备节点：tx 发送输入 + out 上报输出；协议与编解码器是自身字段
     for dev in ("client", "server"):
         t = next(x for x in types if x["typeId"] == dev)
         ins = [p["id"] for p in t["ports"] if p["direction"] == "Input"]
         outs = [p["id"] for p in t["ports"] if p["direction"] == "Output"]
+        portTypes = {p["id"]: p["dataType"] for p in t["ports"]}
         if ins != ["tx"]:
             failures += fail(f"{dev} 输入端口应只有 tx，实际 {ins}")
         if "out" not in outs:
             failures += fail(f"{dev} 缺少 out 输出端口")
+        if portTypes.get("tx") != "RawFrame" or portTypes.get("out") != "RawFrame":
+            failures += fail(f"{dev} 收发应为 RawFrame，实际 {portTypes}")
         keys = [f["key"] for f in t["fields"]]
-        for f in ("kindId", "codecId"):
-            if f not in keys:
-                failures += fail(f"{dev} 缺少自身字段 {f}")
-    print("  设备节点：tx 发送输入 + out 上报输出，kindId/codecId 为自身字段")
+        if "kindId" not in keys:
+            failures += fail(f"{dev} 缺少 kindId 自身字段")
+        if "codecId" in keys:
+            failures += fail(f"{dev} 不应再有 codecId 字段（编解码器已独立成节点）")
+    print("  设备节点：tx/out 均为 RawFrame，协议为自身字段，编解码器独立成节点")
 
-    # 3) 设备输出是 IMessage，不能接入只收 IFrame 的端口（现在没有这种端口）
-    ok = call("/api/connectable", {
+    # 3) 类型约束：设备 RawFrame 不能直连处理器 IMessage，必须经编解码器
+    bad = call("/api/connectable", {
         "fromNodeType": "client", "fromPort": "out",
         "toNodeType": "handler", "toPort": "in"})
-    if not ok["ok"]:
-        failures += fail("客户端(IMessage)→处理器(IMessage) 应允许")
-    print("  客户端→处理器 允许（同为业务消息）")
+    if bad["ok"]:
+        failures += fail("客户端直连处理器未被拒绝")
+    else:
+        print(f"  客户端→处理器 被拒: {bad['reason']}")
+
+    good = call("/api/connectable", {
+        "fromNodeType": "client", "fromPort": "out",
+        "toNodeType": "codec", "toPort": "in"})
+    if not good["ok"]:
+        failures += fail("客户端→编解码器 被误拒")
+    print("  客户端→编解码器 允许")
+
+    enc = call("/api/connectable", {
+        "fromNodeType": "codec", "fromPort": "frame",
+        "toNodeType": "client", "toPort": "tx"})
+    if not enc["ok"]:
+        failures += fail("编解码器编码输出→设备tx 被误拒")
+    print("  编解码器 frame→设备 tx 允许")
 
     # 3) 首次应用：完整链路（客户端→编解码→处理器；服务端 Port=0）
     graph = {
         "revision": 0,
         "nodes": [
-            {"id": "srv", "nodeType": "server", "label": "服务端", "x": 60, "y": 340,
-             "settings": {"kindId": "length-prefix", "codecId": "text",
+            {"id": "srv", "nodeType": "server", "label": "服务端", "x": 40, "y": 340,
+             "settings": {"kindId": "length-prefix",
                           "host": "127.0.0.1", "port": "0", "maxSessions": "8"}},
-            {"id": "cli", "nodeType": "client", "label": "客户端", "x": 60, "y": 90,
-             "settings": {"kindId": "length-prefix", "codecId": "text",
+            {"id": "cli", "nodeType": "client", "label": "客户端", "x": 40, "y": 90,
+             "settings": {"kindId": "length-prefix",
                           "endpoints": "127.0.0.1:1"}},
-            {"id": "h", "nodeType": "handler", "label": "处理器", "x": 400, "y": 90,
+            {"id": "k1", "nodeType": "codec", "label": "编解码器1", "x": 300, "y": 90,
+             "settings": {"codecId": "text"}},
+            {"id": "k2", "nodeType": "codec", "label": "编解码器2", "x": 300, "y": 340,
+             "settings": {"codecId": "text"}},
+            {"id": "h", "nodeType": "handler", "label": "处理器", "x": 560, "y": 90,
              "settings": {"handlerId": "log", "mode": "log"}},
-            {"id": "sk", "nodeType": "sink", "label": "出口", "x": 400, "y": 340,
+            {"id": "sk", "nodeType": "sink", "label": "出口", "x": 560, "y": 340,
              "settings": {"sinkId": "queue", "target": "q1"}},
         ],
         "edges": [
-            {"id": "e1", "from": "cli", "fromPort": "out", "to": "h", "toPort": "in"},
-            {"id": "e2", "from": "srv", "fromPort": "out", "to": "sk", "toPort": "in"},
+            {"id": "e1", "from": "cli", "fromPort": "out", "to": "k1", "toPort": "in"},
+            {"id": "e2", "from": "k1", "fromPort": "out", "to": "h", "toPort": "in"},
+            {"id": "e3", "from": "srv", "fromPort": "out", "to": "k2", "toPort": "in"},
+            {"id": "e4", "from": "k2", "fromPort": "out", "to": "sk", "toPort": "in"},
         ],
     }
     r1 = call("/api/apply", graph)
@@ -138,7 +162,10 @@ def main():
     graph["nodes"].append({"id": "srv2", "nodeType": "server", "label": "服务端2",
                            "settings": {"kindId": "length-prefix", "codecId": "text",
                                         "host": "127.0.0.1", "port": "0", "maxSessions": "4"}})
-    graph["edges"].append({"id": "e5", "from": "srv2", "fromPort": "out", "to": "sk", "toPort": "in"})
+    graph["nodes"].append({"id": "k3", "nodeType": "codec", "label": "编解码器3", "x": 300, "y": 500,
+                           "settings": {"codecId": "text"}})
+    graph["edges"].append({"id": "e5", "from": "srv2", "fromPort": "out", "to": "k3", "toPort": "in"})
+    graph["edges"].append({"id": "e6", "from": "k3", "fromPort": "out", "to": "sk", "toPort": "in"})
     r3 = call("/api/apply", graph)
     if not r3["ok"]:
         failures += fail(f"新增节点失败: {r3['issues']}")
@@ -154,8 +181,8 @@ def main():
         failures += fail(f"原服务端端口漂移，期望仍含 {port}，实际 {[n['port'] for n in listening]}")
 
     # 7) 删除第二个服务端
-    graph["nodes"] = [n for n in graph["nodes"] if n["id"] != "srv2"]
-    graph["edges"] = [e for e in graph["edges"] if e["from"] != "srv2"]
+    graph["nodes"] = [n for n in graph["nodes"] if n["id"] not in ("srv2", "k3")]
+    graph["edges"] = [e for e in graph["edges"] if e["from"] not in ("srv2", "k3") and e["to"] not in ("srv2", "k3")]
     r4 = call("/api/apply", graph)
     time.sleep(2)
     st3 = call("/api/state")
@@ -171,7 +198,20 @@ def main():
             failures += fail(f"{dev} 缺少发送输入端口 tx")
     print("  设备节点具备 tx 发送输入端口")
 
-    # 正常发送：节点已配置 codec 且链路就绪，应成功
+    # 8b) 闭环：处理器 ok -> 编解码器 enc -> frame -> 客户端 tx
+    graph["edges"].append({"id": "e7", "from": "h", "fromPort": "ok", "to": "k1", "toPort": "enc"})
+    graph["edges"].append({"id": "e8", "from": "k1", "fromPort": "frame", "to": "cli", "toPort": "tx"})
+    rclose = call("/api/apply", graph)
+    if not rclose["ok"]:
+        failures += fail(f"闭环应用失败: {rclose['issues']}")
+    else:
+        res = call("/api/process", {"nodeId": "h", "text": "closed-loop"})
+        if not all(r["ok"] for r in res):
+            failures += fail(f"闭环路由失败: {res}")
+        else:
+            print(f"  闭环路由成功: {[(r['nodeId'], r['status']) for r in res]}")
+
+    # 正常发送：设备 tx 上游需有 codec 节点
     send = call("/api/send", {"nodeId": "cli", "text": "verify-tx"})
     if not send["ok"]:
         failures += fail(f"客户端发送失败: {send['status']} {send['error']}")

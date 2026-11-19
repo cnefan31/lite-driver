@@ -31,15 +31,15 @@ public static partial class Program
         {
             Nodes =
             [
-                Node("c", "client", ("kindId", "length-prefix"), ("codecId", "text"),
-                     ("endpoints", "127.0.0.1:1")),
-                Node("s", "server", ("kindId", "length-prefix"), ("codecId", "text"),
-                     ("host", "127.0.0.1"), ("port", "0")),
+                Node("c", "client", ("kindId", "length-prefix"), ("endpoints", "127.0.0.1:1")),
+                Node("s", "server", ("kindId", "length-prefix"), ("host", "127.0.0.1"), ("port", "0")),
+                Node("k", "codec", ("codecId", "text")),
                 Node("h", "handler", ("handlerId", "log"))
             ],
             Edges =
             [
-                new GraphEdge { Id = "e1", From = "c", FromPort = "out", To = "h", ToPort = "in" }
+                new GraphEdge { Id = "e1", From = "c", FromPort = "out", To = "k", ToPort = "in" },
+                new GraphEdge { Id = "e2", From = "k", FromPort = "out", To = "h", ToPort = "in" }
             ]
         };
 
@@ -87,7 +87,7 @@ public static partial class Program
                     Id = "c",
                     NodeType = "client",
                     Label = "客户端",
-                    Settings = new Dictionary<string, string> { ["kindId"] = "stx-etx", ["codecId"] = "text" }
+                    Settings = new Dictionary<string, string> { ["kindId"] = "stx-etx" }
                 }
             ],
             Edges = []
@@ -119,7 +119,7 @@ public static partial class Program
         {
             Nodes =
             [
-                Node("s", "server", ("kindId", "length-prefix"), ("codecId", "text"),
+                Node("s", "server", ("kindId", "length-prefix"),
                      ("host", "127.0.0.1"), ("port", "0"), ("maxSessions", "4"))
             ],
             Edges = []

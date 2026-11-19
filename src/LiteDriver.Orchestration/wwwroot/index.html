@@ -336,14 +336,20 @@ function drawWires(){
   let html = `<defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#8b6ce8"/><stop offset="100%" stop-color="#4c8dff"/>
-    </linearGradient></defs>`;
+    </linearGradient>
+    <!-- 箭头标明数据流向：输出 → 输入 -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+            orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7ea6e8"/>
+    </marker>
+  </defs>`;
   for(const e of state.edges){
     const a = portCenter(e.from, e.fromPort), b = portCenter(e.to, e.toPort);
     if(!a || !b) continue;
     const dx = Math.max(46, Math.abs(b.x-a.x)*0.5);
     const d = `M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${b.x-dx} ${b.y}, ${b.x} ${b.y}`;
     html += `<path d="${d}" stroke="url(#g)" stroke-width="2" fill="none" opacity=".9"
-              style="pointer-events:none"/>`;
+              marker-end="url(#arrow)" style="pointer-events:none"/>`;
     // 删除热区加宽到 24，并在 hover 时高亮，避免"点不中"
     html += `<path d="${d}" stroke="transparent" stroke-width="24" fill="none"
               style="pointer-events:stroke;cursor:pointer" data-edge="${esc(e.id)}"/>`;
@@ -845,19 +851,26 @@ async function loadInitial(){
   const hasClient = !!state.typeMap['client'];
   if(!hasClient) return;
 
-  const c = { id: uid('client'), nodeType:'client', label:'客户端', x: 60, y: 120,
+  const c = { id: uid('client'), nodeType:'client', label:'客户端', x: 40, y: 100,
     settings: defaultSettings('client') };
-  const sNode = { id: uid('server'), nodeType:'server', label:'服务端', x: 60, y: 360,
-    settings: defaultSettings('server') };
-  const h = { id: uid('handler'), nodeType:'handler', label:'处理器', x: 360, y: 120,
+  const k = { id: uid('codec'), nodeType:'codec', label:'编解码器', x: 300, y: 100,
+    settings: defaultSettings('codec') };
+  const h = { id: uid('handler'), nodeType:'handler', label:'处理器', x: 560, y: 100,
     settings: defaultSettings('handler') };
-  const sink = { id: uid('sink'), nodeType:'sink', label:'出口', x: 360, y: 360,
+  const sNode = { id: uid('server'), nodeType:'server', label:'服务端', x: 40, y: 360,
+    settings: defaultSettings('server') };
+  const k2 = { id: uid('codec'), nodeType:'codec', label:'编解码器2', x: 300, y: 360,
+    settings: defaultSettings('codec') };
+  const sink = { id: uid('sink'), nodeType:'sink', label:'出口', x: 560, y: 360,
     settings: defaultSettings('sink') };
 
-  state.nodes = [c, sNode, h, sink];
+  state.nodes = [c, k, h, sNode, k2, sink];
   state.edges = [
-    { id: uid('e'), from: c.id, fromPort:'out', to: h.id, toPort:'in' },
-    { id: uid('e'), from: sNode.id, fromPort:'out', to: sink.id, toPort:'in' }
+    // 上报链路：原始帧 → 编解码器 → 处理器
+    { id: uid('e'), from: c.id, fromPort:'out', to: k.id, toPort:'in' },
+    { id: uid('e'), from: k.id, fromPort:'out', to: h.id, toPort:'in' },
+    { id: uid('e'), from: sNode.id, fromPort:'out', to: k2.id, toPort:'in' },
+    { id: uid('e'), from: k2.id, fromPort:'out', to: sink.id, toPort:'in' }
   ];
   renderNodes(); renderProps();
   setMsg('已载入示例：客户端与服务端各自带协议和编解码器，输出去往处理器/出口（端点需按实际设备修改）');

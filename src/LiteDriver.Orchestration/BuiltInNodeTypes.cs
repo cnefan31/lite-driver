@@ -1,18 +1,61 @@
 namespace LiteDriver.Orchestration;
 
 /// <summary>
-/// 内置节点类型集合。每个节点都是独立的，各自带输入/输出以承接上游、向下游输出；
-/// 协议与编解码器是<b>设备节点自身的属性</b>，不是外挂的连线绑定。
+/// 内置节点类型集合。端口类型是<b>强约束</b>，不是装饰：
 /// <code>
-/// 客户端 [自身: 协议+编解码器] ──IMessage──► 处理器 [in:IMessage]
-/// 服务端 [自身: 协议+编解码器] ──IMessage──► 出口   [in:Any]
-///                              └─IMessage──► 变换   [IMessage→IMessage] ──► 处理器
+/// 客户端 [Web 协议] ──RawFrame──► 编解码器 ──IMessage──► 处理器 ──IMessage──► 设备 tx
+/// 服务端 [Web 协议] ──RawFrame──► 编解码器 ──IMessage──► 出口
 /// </code>
-/// 端口类型仍然约束数据流：设备节点只输出 <c>IMessage</c>，
-/// 因此不能与只接受 <c>IFrame</c> 的节点相连——约束落在数据流语义上，而非绑定关系上。
+/// 设备节点只产出 <c>RawFrame</c>，处理器只接受 <c>IMessage</c>，
+/// 因此「客户端直连处理器」会被类型校验拒绝——必须经过编解码器。
 /// </summary>
 public static class BuiltInNodeTypes
 {
+    /// <summary>
+    /// 编解码器节点：把原始帧转成业务消息，是 RawFrame → Message 的唯一通道。
+    /// <para>
+    /// 因为客户端/服务端输出 <c>RawFrame</c>、处理器只接受 <c>IMessage</c>，
+    /// 两者之间<b>必须</b>经过本节点，否则连线会被类型校验拒绝。
+    /// </para>
+    /// </summary>
+    public sealed class CodecType : INodeType
+    {
+        public string TypeId => "codec";
+
+        public string DisplayName => "编解码器";
+
+        public string Description => "双向转换：in/out 解码（原始帧→消息），enc/frame 编码（消息→原始帧）。设备不能直连处理器，也不能直连处理器结果。";
+
+        public bool IsSource => false;
+
+        public IReadOnlyList<PortSpec> Ports { get; } =
+        [
+            // 解码方向：原始帧 → 业务消息
+            // 两个方向都不强制必连：可能只用解码（采集）或只用编码（下发）
+            new PortSpec("in", "原始帧", PortDirection.Input, PortTypes.RawFrame),
+            new PortSpec("out", "业务消息", PortDirection.Output, PortTypes.Message),
+            // 编码方向：业务消息 → 原始帧（把处理结果转回帧，才能写回设备）
+            new PortSpec("enc", "待编码", PortDirection.Input, PortTypes.Message),
+            new PortSpec("frame", "编码帧", PortDirection.Output, PortTypes.RawFrame)
+        ];
+
+        public IReadOnlyList<NodeField> Fields { get; } =
+        [
+            new NodeField("codecId", "编解码器", NodeFieldKind.Select, "", "宿主注册的编解码器", OptionsSource: "codecs")
+        ];
+
+        public string? Validate(GraphNode node, INodeTypeCatalogView catalog)
+        {
+            var codecId = node.Get("codecId").Trim();
+            if (codecId.Length == 0)
+            {
+                return "未选择编解码器";
+            }
+
+            return catalog.HasCodec(codecId) ? null : $"编解码器 '{codecId}' 未注册";
+        }
+    }
+
     /// <summary>
     /// 客户端节点：主动拨号，是链路起点。
     /// <para>
@@ -26,21 +69,21 @@ public static class BuiltInNodeTypes
 
         public string DisplayName => "客户端";
 
-        public string Description => "主动拨号到设备。协议与编解码器是节点自身属性；in 端口写入的消息发往设备，out 端口输出设备上报。";
+        public string Description => "主动拨号到设备。协议是自身属性；tx 接原始帧写入设备，out 输出原始帧（须经编解码器转成业务消息）。";
 
         public bool IsSource => true;
 
         public IReadOnlyList<PortSpec> Ports { get; } =
         [
-            // 发送通道：上游节点的消息写入本设备 socket（经 codec 编码 + 协议组帧）
-            new PortSpec("tx", "发送", PortDirection.Input, PortTypes.Message),
-            new PortSpec("out", "业务消息", PortDirection.Output, PortTypes.Message)
+            // 发送通道：接上游送来的原始帧，写入本设备 socket
+            new PortSpec("tx", "发送帧", PortDirection.Input, PortTypes.RawFrame),
+            // 上报：设备读到的裸帧，必须经编解码器才能变成业务消息
+            new PortSpec("out", "原始帧", PortDirection.Output, PortTypes.RawFrame)
         ];
 
         public IReadOnlyList<NodeField> Fields { get; } =
         [
             new NodeField("kindId", "协议", NodeFieldKind.Select, "", "本设备使用的帧格式", OptionsSource: "kinds"),
-            new NodeField("codecId", "编解码器", NodeFieldKind.Select, "", "帧转业务消息的方式；留空表示输出原始帧", OptionsSource: "codecs"),
             new NodeField("endpoints", "端点", NodeFieldKind.Lines, "127.0.0.1:502", "每行一个 host:port"),
             new NodeField("retryInitialMs", "初始退避 ms", NodeFieldKind.Number, "500"),
             new NodeField("retryMaxMs", "退避上限 ms", NodeFieldKind.Number, "30000"),
@@ -59,12 +102,6 @@ public static class BuiltInNodeTypes
             if (!catalog.HasKind(kindId))
             {
                 return $"协议 '{kindId}' 未注册";
-            }
-
-            var codecId = node.Get("codecId").Trim();
-            if (codecId.Length > 0 && !catalog.HasCodec(codecId))
-            {
-                return $"编解码器 '{codecId}' 未注册";
             }
 
             var eps = node.GetLines("endpoints");
@@ -106,15 +143,14 @@ public static class BuiltInNodeTypes
 
         public IReadOnlyList<PortSpec> Ports { get; } =
         [
-            // 发送通道：向上游写入的消息会广播给本监听端点的全部入站会话
-            new PortSpec("tx", "发送", PortDirection.Input, PortTypes.Message),
-            new PortSpec("out", "业务消息", PortDirection.Output, PortTypes.Message)
+            // 发送通道：接上游送来的原始帧，广播给本监听端点的全部入站会话
+            new PortSpec("tx", "发送帧", PortDirection.Input, PortTypes.RawFrame),
+            new PortSpec("out", "原始帧", PortDirection.Output, PortTypes.RawFrame)
         ];
 
         public IReadOnlyList<NodeField> Fields { get; } =
         [
             new NodeField("kindId", "协议", NodeFieldKind.Select, "", "本监听端点使用的帧格式", OptionsSource: "kinds"),
-            new NodeField("codecId", "编解码器", NodeFieldKind.Select, "", "帧转业务消息的方式；留空表示输出原始帧", OptionsSource: "codecs"),
             new NodeField("host", "监听地址", NodeFieldKind.Text, "0.0.0.0"),
             new NodeField("port", "端口", NodeFieldKind.Number, "0", "0 表示由系统分配"),
             new NodeField("maxSessions", "最大会话", NodeFieldKind.Number, "64"),
@@ -132,12 +168,6 @@ public static class BuiltInNodeTypes
             if (!catalog.HasKind(kindId))
             {
                 return $"协议 '{kindId}' 未注册";
-            }
-
-            var codecId = node.Get("codecId").Trim();
-            if (codecId.Length > 0 && !catalog.HasCodec(codecId))
-            {
-                return $"编解码器 '{codecId}' 未注册";
             }
 
             var port = node.GetInt("port", 0);

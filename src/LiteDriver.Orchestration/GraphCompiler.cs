@@ -106,17 +106,28 @@ public static class GraphCompiler
 
             if (outPort is null)
             {
+                // 方向错误最常见：把连线接反了。给出可操作的提示。
+                var reversed = fromType.Ports.Any(
+                    p => p.Direction == PortDirection.Input && p.Id == edge.FromPort);
                 issues.Add(new CompileIssue(
                     "edge_port_missing",
-                    $"节点 '{from.Label}' 没有输出端口 '{edge.FromPort}'", from.Id));
+                    reversed
+                        ? $"连线方向错误：'{from.Label}.{edge.FromPort}' 是输入端口，连线必须从输出端口出发"
+                        : $"节点 '{from.Label}' 没有输出端口 '{edge.FromPort}'（连线起点必须是输出端口）",
+                    from.Id));
                 continue;
             }
 
             if (inPort is null)
             {
+                var reversed = toType.Ports.Any(
+                    p => p.Direction == PortDirection.Output && p.Id == edge.ToPort);
                 issues.Add(new CompileIssue(
                     "edge_port_missing",
-                    $"节点 '{to.Label}' 没有输入端口 '{edge.ToPort}'", to.Id));
+                    reversed
+                        ? $"连线方向错误：'{to.Label}.{edge.ToPort}' 是输出端口，连线必须指向输入端口"
+                        : $"节点 '{to.Label}' 没有输入端口 '{edge.ToPort}'（连线终点必须是输入端口）",
+                    to.Id));
                 continue;
             }
 
@@ -124,7 +135,7 @@ public static class GraphCompiler
             {
                 issues.Add(new CompileIssue(
                     "edge_type_mismatch",
-                    $"不能把 {from.Label}（{outPort.DataType}）连到 {to.Label}（{inPort.DataType}）：" +
+                    $"类型不匹配：{from.Label} 输出 {outPort.DataType}，但 {to.Label} 输入要求 {inPort.DataType}；" +
                     $"类型不匹配，中间需要一个转换节点",
                     to.Id));
             }
@@ -146,6 +157,7 @@ public static class GraphCompiler
     /// <summary>默认节点类型目录（六个内置类型）。</summary>
     public static NodeTypeCatalog DefaultNodeTypes() => new NodeTypeCatalog()
         .Register(new BuiltInNodeTypes.ClientType())
+        .Register(new BuiltInNodeTypes.CodecType())
         .Register(new BuiltInNodeTypes.ServerType())
         .Register(new BuiltInNodeTypes.TransformType())
         .Register(new BuiltInNodeTypes.HandlerType())
@@ -200,9 +212,12 @@ public static class GraphCompiler
 
         foreach (var e in graph.Edges)
         {
-            // 写入设备 tx 的边不算「数据回流」：设备把处理结果写回 socket 是正当闭环，
-            // 它与设备 out 上的上报是两条独立的单向通道，不构成运行时自激。
-            if (string.Equals(e.ToPort, "tx", StringComparison.Ordinal))
+            // 回写边不算「数据回流」：设备把处理结果写回 socket 是正当闭环。
+            // · tx   —— 设备写入通道，与 out 上的上报是两条独立单向通道
+            // · enc  —— 编解码器的编码入口，与 out 上的解码是另一条独立通道
+            // 这两条边都不构成运行时自激，应从环路判定中排除。
+            if (string.Equals(e.ToPort, "tx", StringComparison.Ordinal) ||
+                string.Equals(e.ToPort, "enc", StringComparison.Ordinal))
             {
                 continue;
             }

@@ -263,12 +263,26 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
 
         var results = new List<NodeSendResult>();
 
-        // 沿该输出端口的所有连线，逐个下游派发
+        // 沿该输出端口的所有连线逐个下游派发；codec/transform 属于链路中间节点，需继续转发。
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var pending = new Queue<(string NodeId, string FromPort)>();
+
         foreach (var edge in graph.Edges.Where(e =>
                      e.From == handlerNodeId &&
                      string.Equals(e.FromPort, outputPort, StringComparison.Ordinal)))
         {
-            var target = graph.Nodes.FirstOrDefault(n => n.Id == edge.To);
+            pending.Enqueue((edge.To, edge.FromPort));
+        }
+
+        while (pending.Count > 0)
+        {
+            var (currentId, _) = pending.Dequeue();
+            if (!visited.Add(currentId))
+            {
+                continue;
+            }
+
+            var target = graph.Nodes.FirstOrDefault(n => n.Id == currentId);
             if (target is null)
             {
                 continue;
@@ -294,8 +308,30 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
                 continue;
             }
 
-            // 传给下游处理器：按其输入继续路由（此处仅记录，不做递归处理）
-            results.Add(NodeSendResult.Sent(target.Id, 0, 0));
+            if (target.NodeType == "transform")
+            {
+                // 变换节点：把消息继续沿其 out 传递
+                foreach (var next in graph.Edges.Where(e => e.From == target.Id &&
+                                                            string.Equals(e.FromPort, "out", StringComparison.Ordinal)))
+                {
+                    pending.Enqueue((next.To, "out"));
+                }
+
+                continue;
+            }
+
+            if (target.NodeType == "codec")
+            {
+                // 编解码器：消息从其 enc 进入、frame 输出，再继续传给下游设备
+                foreach (var next in graph.Edges.Where(e => e.From == target.Id &&
+                                                            string.Equals(e.FromPort, "frame", StringComparison.Ordinal)))
+                {
+                    pending.Enqueue((next.To, "frame"));
+                }
+
+                results.Add(NodeSendResult.Sent(target.Id, 0, 0));
+                continue;
+            }
         }
 
         if (results.Count == 0)
@@ -365,6 +401,31 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
     }
 
     /// <summary>
+    /// 找到连到某个设备节点 tx 的上游编解码器节点的 codecId。
+    /// 编解码器已改为独立节点，设备的编码方式由链路决定而非设备字段。
+    /// </summary>
+    private string? FindCodecForDevice(OrchestrationGraph graph, GraphNode device)
+    {
+        // 设备 tx ← 某节点 out：该节点应是 codec（RawFrame 输出）
+        var edge = graph.Edges.FirstOrDefault(e =>
+            string.Equals(e.To, device.Id, StringComparison.Ordinal) &&
+            string.Equals(e.ToPort, "tx", StringComparison.Ordinal));
+        if (edge is null)
+        {
+            return null;
+        }
+
+        var upstream = graph.Nodes.FirstOrDefault(n => n.Id == edge.From);
+        if (upstream is null)
+        {
+            return null;
+        }
+
+        var codecId = upstream.Get("codecId").Trim();
+        return codecId.Length == 0 ? null : codecId;
+    }
+
+    /// <summary>
     /// 为指定输出端口的下游设备构造一条可编码的文本消息。
     /// 处理器自身不绑定 codec，实际编码由下游设备的 codec 完成。
     /// </summary>
@@ -380,7 +441,7 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
 
         if (downstream is not null && downstream.NodeType is "client" or "server")
         {
-            var codecId = downstream.Get("codecId").Trim();
+            var codecId = FindCodecForDevice(graph, downstream) ?? "";
             var reg = _codecs.FirstOrDefault(c => string.Equals(c.CodecId, codecId, StringComparison.Ordinal));
             if (reg is not null)
             {
@@ -437,12 +498,12 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
             return NodeSendResult.Fail(SendStatus.NotReady, nodeId, "编排引擎尚未运行");
         }
 
-        // 用节点自身 codec 把消息编码成帧载荷
-        var codecId = node.Get("codecId").Trim();
-        if (codecId.Length == 0)
+        // 编解码器是独立节点：从设备 tx 的上游 codec 节点解析其 codecId
+        var codecId = FindCodecForDevice(graph, node);
+        if (codecId is null)
         {
             return NodeSendResult.Fail(
-                SendStatus.NoCodec, nodeId, "该节点未配置编解码器，无法把消息序列化成字节");
+                SendStatus.NoCodec, nodeId, "该设备的发送通道未连接编解码器节点（tx 的上游缺少 codec）");
         }
 
         var registration = _codecs.FirstOrDefault(
@@ -461,8 +522,16 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
                 nodeId,
                 node.NodeType == "client" ? ConnectionDirection.Outbound : ConnectionDirection.Inbound));
 
+            // 处理结果消息（HandlerResult）携带文本；若 codec 只认自己的消息类型，
+            // 用 ITextPayloadCodec 把文本包装成该 codec 期望的类型再编码。
+            var toEncode = message;
+            if (message.HasValue && message.As<object>() is HandlerResult hr && codec is ITextPayloadCodec tc)
+            {
+                toEncode = tc.FromText(hr.Text);
+            }
+
             var buffer = new System.Buffers.ArrayBufferWriter<byte>(256);
-            codec.Encode(message, buffer);
+            codec.Encode(toEncode, buffer);
             payload = buffer.WrittenSpan.ToArray();
         }
         catch (Exception ex)
@@ -532,7 +601,14 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
             return NodeSendResult.Fail(SendStatus.InvalidNode, nodeId, $"节点 '{nodeId}' 不存在或不是设备节点");
         }
 
-        var codecId = node.Get("codecId").Trim();
+        // 编解码器是独立节点：从设备 tx 的上游 codec 节点解析
+        var codecId = FindCodecForDevice(graph, node);
+        if (codecId is null)
+        {
+            return NodeSendResult.Fail(
+                SendStatus.NoCodec, nodeId, "该设备的发送通道未连接编解码器节点");
+        }
+
         var registration = _codecs.FirstOrDefault(
             c => string.Equals(c.CodecId, codecId, StringComparison.Ordinal));
         if (registration is null)

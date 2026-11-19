@@ -27,16 +27,18 @@ public sealed class OrchestrationCompilerTests
         return node;
     }
 
-    /// <summary>客户端：协议与编解码器是自身字段。</summary>
+    /// <summary>客户端：协议是自身字段，输出原始帧。</summary>
     private static GraphNode Client(string id, string endpoints = "127.0.0.1:502",
-        string kind = "length-prefix", string? codecId = "text") =>
-        Node(id, "client", ("endpoints", endpoints), ("kindId", kind), ("codecId", codecId ?? ""));
+        string kind = "length-prefix") =>
+        Node(id, "client", ("endpoints", endpoints), ("kindId", kind));
 
-    /// <summary>服务端：同样自带协议与编解码器。</summary>
-    private static GraphNode Server(string id, int port = 9000,
-        string kind = "length-prefix", string? codecId = "text") =>
-        Node(id, "server", ("host", "127.0.0.1"), ("port", port.ToString()),
-            ("kindId", kind), ("codecId", codecId ?? ""));
+    /// <summary>服务端：协议是自身字段，输出原始帧。</summary>
+    private static GraphNode Server(string id, int port = 9000, string kind = "length-prefix") =>
+        Node(id, "server", ("host", "127.0.0.1"), ("port", port.ToString()), ("kindId", kind));
+
+    /// <summary>编解码器：原始帧 → 业务消息（独立节点）。</summary>
+    private static GraphNode Codec(string id, string codecId = "text") =>
+        Node(id, "codec", ("codecId", codecId));
 
     private static GraphNode Handler(string id) => Node(id, "handler", ("handlerId", "log"));
 
@@ -82,9 +84,10 @@ public sealed class OrchestrationCompilerTests
         var g = Graph(
             [Client("c1", "127.0.0.1:502", kind: "length-prefix"),
              Client("c2", "127.0.0.1:503", kind: "stx-etx"),
+             Codec("k1"), Codec("k2"),
              Handler("h1"), Handler("h2")],
-            ("c1", "out", "h1", "in"),
-            ("c2", "out", "h2", "in"));
+            ("c1", "out", "k1", "in"), ("k1", "out", "h1", "in"),
+            ("c2", "out", "k2", "in"), ("k2", "out", "h2", "in"));
 
         var result = Compile(g);
 
@@ -96,41 +99,36 @@ public sealed class OrchestrationCompilerTests
     }
 
     [Fact]
-    public void DeviceNode_ShouldCarryCodecAsOwnProperty()
+    public void CodecNode_ShouldBeRequiredBetweenDeviceAndHandler()
     {
-        var g = Graph([Client("c"), Handler("h")], ("c", "out", "h", "in"));
-        var result = Compile(g);
+        // 设备输出 RawFrame、处理器只收 IMessage，必须经编解码器
+        var bad = Graph([Client("c"), Handler("h")], ("c", "out", "h", "in"));
+        var badResult = Compile(bad);
+        Assert.False(badResult.Ok);
+        Assert.Contains(badResult.Issues, i => i.Code == "edge_type_mismatch");
 
-        Assert.True(result.Ok);
-        Assert.Equal("text", result.Config!.Devices[0].CodecId);
+        var good = Graph([Client("c"), Codec("k"), Handler("h")],
+            ("c", "out", "k", "in"), ("k", "out", "h", "in"));
+        Assert.True(Compile(good).Ok);
     }
 
     [Fact]
-    public void DeviceNode_ShouldAllowEmptyCodec()
+    public void NodeTypeCatalog_ShouldHaveCodecButNoProtocolNode()
     {
-        var g = Graph([Client("c", codecId: null), Handler("h")], ("c", "out", "h", "in"));
-        var result = Compile(g);
-
-        Assert.True(result.Ok);
-        Assert.Null(result.Config!.Devices[0].CodecId);
-    }
-
-    [Fact]
-    public void ProtocolNodeType_ShouldNoLongerExist()
-    {
+        // 协议是设备自身字段，不是节点；编解码器已恢复为独立节点
         Assert.Null(Types.Find("protocol"));
-        Assert.Null(Types.Find("codec"));
+        Assert.NotNull(Types.Find("codec"));
     }
 
     // ---------------- 端口类型约束 ----------------
 
     [Fact]
-    public void DevicePorts_ShouldAllBeMessageTyped()
+    public void DevicePorts_ShouldAllBeRawFrameTyped()
     {
-        // 设备的收发都是业务消息：tx（发送）与 out（上报）
+        // 设备的收发都是原始帧；业务消息只能由编解码器产出
         var clientType = Types.Find("client")!;
-        Assert.All(clientType.Ports, p => Assert.Equal(PortTypes.Message, p.DataType));
-        Assert.DoesNotContain(clientType.Ports, p => p.DataType == PortTypes.Frame);
+        Assert.All(clientType.Ports, p => Assert.Equal(PortTypes.RawFrame, p.DataType));
+        Assert.DoesNotContain(clientType.Ports, p => p.DataType == PortTypes.Message);
     }
 
     [Fact]
@@ -155,12 +153,15 @@ public sealed class OrchestrationCompilerTests
     }
 
     [Fact]
-    public void HandlerResult_ShouldRouteBackToDeviceTx()
+    public void HandlerResult_ShouldRouteBackThroughCodecEncoder()
     {
-        // 闭环：客户端 out -> 处理器 in -> ok -> 客户端 tx
-        var g = Graph([Client("c"), Handler("h")],
-            ("c", "out", "h", "in"),
-            ("h", "ok", "c", "tx"));
+        // 闭环：客户端 RawFrame -> codec -> 处理器 -> ok -> codec.enc -> codec.frame -> 客户端 tx
+        // 处理结果是 IMessage，必须先经 codec 的编码方向转回 RawFrame 才能写设备。
+        var g = Graph([Client("c"), Codec("k"), Handler("h")],
+            ("c", "out", "k", "in"),
+            ("k", "out", "h", "in"),
+            ("h", "ok", "k", "enc"),
+            ("k", "frame", "c", "tx"));
 
         var result = Compile(g);
 
@@ -168,12 +169,28 @@ public sealed class OrchestrationCompilerTests
     }
 
     [Fact]
-    public void TxWriteBack_ShouldNotCountAsCycle()
+    public void HandlerResult_CannotWriteDeviceTxDirectly()
     {
-        // 写入 tx 是独立单向通道，不应被环路检测判为自激
-        var g = Graph([Client("c"), Handler("h")],
-            ("c", "out", "h", "in"),
+        // 处理结果是 IMessage，设备 tx 要 RawFrame，直连必须被拒
+        var g = Graph([Client("c"), Codec("k"), Handler("h")],
+            ("c", "out", "k", "in"),
+            ("k", "out", "h", "in"),
             ("h", "ok", "c", "tx"));
+
+        var result = Compile(g);
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "edge_type_mismatch");
+    }
+
+    [Fact]
+    public void WriteBackEdges_ShouldNotCountAsCycle()
+    {
+        // tx 与 enc 都是独立单向通道，不应被环路检测判为自激
+        var g = Graph([Client("c"), Codec("k"), Handler("h")],
+            ("c", "out", "k", "in"),
+            ("k", "out", "h", "in"),
+            ("h", "ok", "k", "enc"),
+            ("k", "frame", "c", "tx"));
 
         var result = Compile(g);
         Assert.DoesNotContain(result.Issues, i => i.Code == "graph_cycle");
@@ -209,21 +226,23 @@ public sealed class OrchestrationCompilerTests
     [Fact]
     public void Transform_ShouldChainBetweenMessages()
     {
-        var g = Graph([Client("c"), Transform("t1"), Transform("t2"), Handler("h")],
-            ("c", "out", "t1", "in"),
+        var g = Graph([Client("c"), Codec("k"), Transform("t1"), Transform("t2"), Handler("h")],
+            ("c", "out", "k", "in"),
+            ("k", "out", "t1", "in"),
             ("t1", "out", "t2", "in"),
             ("t2", "out", "h", "in"));
 
         var result = Compile(g);
 
         Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
-        Assert.Equal(["c", "t1", "t2", "h"], result.Topology[0].Path);
+        Assert.Equal(["c", "k", "t1", "t2", "h"], result.Topology[0].Path);
     }
 
     [Fact]
-    public void Sink_ShouldAcceptMessage()
+    public void Sink_ShouldAcceptMessageViaCodec()
     {
-        var g = Graph([Client("c"), Sink("s")], ("c", "out", "s", "in"));
+        var g = Graph([Client("c"), Codec("k"), Sink("s")],
+            ("c", "out", "k", "in"), ("k", "out", "s", "in"));
         Assert.True(Compile(g).Ok);
     }
 
@@ -232,7 +251,8 @@ public sealed class OrchestrationCompilerTests
     [Fact]
     public void ShouldRejectUnknownPort()
     {
-        var g = Graph([Client("c"), Handler("h")], ("c", "nope", "h", "in"));
+        var g = Graph([Client("c"), Codec("k"), Handler("h")],
+            ("c", "out", "k", "in"), ("k", "out", "h", "in"), ("c", "nope", "h", "in"));
 
         var result = Compile(g);
 
@@ -282,7 +302,8 @@ public sealed class OrchestrationCompilerTests
     [Fact]
     public void ShouldRejectMissingProtocolOnDevice()
     {
-        var g = Graph([Client("c", kind: ""), Handler("h")], ("c", "out", "h", "in"));
+        var g = Graph([Client("c", kind: ""), Codec("k"), Handler("h")],
+            ("c", "out", "k", "in"), ("k", "out", "h", "in"));
 
         var result = Compile(g);
 
@@ -293,7 +314,8 @@ public sealed class OrchestrationCompilerTests
     [Fact]
     public void ShouldRejectUnknownKindOnDevice()
     {
-        var g = Graph([Client("c", kind: "not-registered"), Handler("h")], ("c", "out", "h", "in"));
+        var g = Graph([Client("c", kind: "not-registered"), Codec("k"), Handler("h")],
+            ("c", "out", "k", "in"), ("k", "out", "h", "in"));
 
         var result = Compile(g);
 
@@ -302,14 +324,15 @@ public sealed class OrchestrationCompilerTests
     }
 
     [Fact]
-    public void ShouldRejectUnknownCodecOnDevice()
+    public void ShouldRejectUnknownCodecOnCodecNode()
     {
-        var g = Graph([Client("c", codecId: "not-a-codec"), Handler("h")], ("c", "out", "h", "in"));
+        var g = Graph([Client("c"), Codec("k", "not-a-codec"), Handler("h")],
+            ("c", "out", "k", "in"), ("k", "out", "h", "in"));
 
         var result = Compile(g);
 
         Assert.False(result.Ok);
-        Assert.Contains(result.Issues, i => i.Code == "node_invalid" && i.NodeId == "c");
+        Assert.Contains(result.Issues, i => i.Code == "node_invalid" && i.NodeId == "k");
     }
 
     [Theory]
@@ -321,7 +344,8 @@ public sealed class OrchestrationCompilerTests
     [InlineData("host:abc")]
     public void ShouldRejectInvalidEndpoint(string endpoint)
     {
-        var g = Graph([Client("c", endpoint), Handler("h")], ("c", "out", "h", "in"));
+        var g = Graph([Client("c", endpoint), Codec("k"), Handler("h")],
+            ("c", "out", "k", "in"), ("k", "out", "h", "in"));
 
         var result = Compile(g);
 
@@ -340,8 +364,9 @@ public sealed class OrchestrationCompilerTests
     [Fact]
     public void ShouldRejectConflictingListenerPorts()
     {
-        var g = Graph([Server("s1", 9000), Server("s2", 9000), Sink("k1"), Sink("k2")],
-            ("s1", "out", "k1", "in"), ("s2", "out", "k2", "in"));
+        var g = Graph([Server("s1", 9000), Server("s2", 9000), Codec("c1"), Codec("c2"), Sink("k1"), Sink("k2")],
+            ("s1", "out", "c1", "in"), ("c1", "out", "k1", "in"),
+            ("s2", "out", "c2", "in"), ("c2", "out", "k2", "in"));
 
         var result = Compile(g);
 
@@ -352,8 +377,9 @@ public sealed class OrchestrationCompilerTests
     [Fact]
     public void ShouldAllowMultipleEphemeralListeners()
     {
-        var g = Graph([Server("s1", 0), Server("s2", 0), Sink("k1"), Sink("k2")],
-            ("s1", "out", "k1", "in"), ("s2", "out", "k2", "in"));
+        var g = Graph([Server("s1", 0), Server("s2", 0), Codec("c1"), Codec("c2"), Sink("k1"), Sink("k2")],
+            ("s1", "out", "c1", "in"), ("c1", "out", "k1", "in"),
+            ("s2", "out", "c2", "in"), ("c2", "out", "k2", "in"));
 
         var result = Compile(g);
 
@@ -438,23 +464,24 @@ public sealed class OrchestrationCompilerTests
     [Fact]
     public void PortTypes_AnyShouldMatchEverything()
     {
-        Assert.True(PortSpec.TypesCompatible(PortTypes.Frame, PortTypes.Any));
+        Assert.True(PortSpec.TypesCompatible(PortTypes.RawFrame, PortTypes.Any));
         Assert.True(PortSpec.TypesCompatible(PortTypes.Any, PortTypes.Message));
         Assert.True(PortSpec.TypesCompatible(PortTypes.Message, PortTypes.Message));
-        Assert.False(PortSpec.TypesCompatible(PortTypes.Frame, PortTypes.Message));
+        Assert.False(PortSpec.TypesCompatible(PortTypes.RawFrame, PortTypes.Message));
     }
 
     [Fact]
-    public void DeviceTypes_ShouldHaveSendInputAndReportOutput()
+    public void DeviceTypes_ShouldUseRawFrameOnBothDirections()
     {
-        // 设备既接收（tx，用于向 socket 发送）也输出（out，设备上报）
+        // 设备的收发都是原始帧：tx 接收待发送帧，out 输出上报帧。
+        // 这正是「设备不能直连处理器」的类型基础。
         foreach (var typeId in new[] { "client", "server" })
         {
             var t = Types.Find(typeId)!;
             Assert.Contains(t.Ports, p =>
-                p.Id == "tx" && p.Direction == PortDirection.Input && p.DataType == PortTypes.Message);
+                p.Id == "tx" && p.Direction == PortDirection.Input && p.DataType == PortTypes.RawFrame);
             Assert.Contains(t.Ports, p =>
-                p.Id == "out" && p.Direction == PortDirection.Output && p.DataType == PortTypes.Message);
+                p.Id == "out" && p.Direction == PortDirection.Output && p.DataType == PortTypes.RawFrame);
         }
     }
 
@@ -484,13 +511,14 @@ public sealed class OrchestrationCompilerTests
     }
 
     [Fact]
-    public void DeviceTypes_ShouldDeclareProtocolAndCodecFields()
+    public void DeviceTypes_ShouldDeclareProtocolFieldButNotCodec()
     {
+        // 协议是设备自身字段；编解码器已独立成节点，不再是设备字段
         foreach (var typeId in new[] { "client", "server" })
         {
             var t = Types.Find(typeId)!;
             Assert.Contains(t.Fields, f => f.Key == "kindId" && f.OptionsSource == "kinds");
-            Assert.Contains(t.Fields, f => f.Key == "codecId" && f.OptionsSource == "codecs");
+            Assert.DoesNotContain(t.Fields, f => f.Key == "codecId");
         }
     }
 }
