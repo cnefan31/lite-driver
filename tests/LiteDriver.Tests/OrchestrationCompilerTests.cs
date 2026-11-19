@@ -450,6 +450,17 @@ public sealed class OrchestrationCompilerTests
     // ---------------- 其它 ----------------
 
     [Fact]
+    public void Flipped_ShouldPersistThroughClone()
+    {
+        // 左右翻转是布局属性，需随图保存与恢复
+        var g = Graph([Client("c")]);
+        g.Nodes[0].Flipped = true;
+
+        var copy = g.Clone();
+        Assert.True(copy.Nodes[0].Flipped);
+    }
+
+    [Fact]
     public void Clone_ShouldBeDeepCopy()
     {
         var g = Graph([Client("c")]);

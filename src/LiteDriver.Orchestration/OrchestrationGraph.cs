@@ -34,6 +34,12 @@ public sealed class GraphNode
     public double Y { get; set; }
 
     /// <summary>
+    /// 是否左右翻转。翻转后输入端口在右侧、输出端口在左侧，
+    /// 便于把链路画成从右向左，避免连线大跨度回折。仅影响布局，不改变语义。
+    /// </summary>
+    public bool Flipped { get; set; }
+
+    /// <summary>
     /// 节点参数。键由各 <see cref="INodeType.Fields"/> 声明；
     /// 值统一用字符串存储，便于前端直接编辑与 JSON 往返。
     /// </summary>
@@ -98,6 +104,7 @@ public sealed class OrchestrationGraph
             Label = n.Label,
             X = n.X,
             Y = n.Y,
+            Flipped = n.Flipped,
             Settings = new Dictionary<string, string>(n.Settings, StringComparer.Ordinal)
         })],
         Edges = [.. Edges.Select(e => new GraphEdge

@@ -91,7 +91,16 @@
     cursor:crosshair;padding:4px 7px;border-radius:5px;transition:.12s;
     min-height:20px;-webkit-user-select:none;user-select:none}
   .port .plabel{white-space:nowrap}
+  .port .pdir{font-size:8px;color:#5c6878;flex:0 0 auto}
+  .node.flipped .port.in .pdir{transform:rotate(180deg)}
+  .node.flipped .port.out .pdir{transform:rotate(180deg)}
   .port:hover{background:rgba(76,141,255,.14);color:var(--accent)}
+  /* 注意：翻转靠交换 DOM 列顺序实现（见 renderNodes），
+     此处不能再加 row-reverse，否则两者抵消，位置纹丝不动。 */
+  .ptype{font:9px var(--mono);color:#66707f;background:rgba(255,255,255,.05);
+    border:1px solid var(--line);border-radius:3px;padding:0 3px;flex:0 0 auto}
+  .port:hover .ptype{color:#9db4d0;border-color:var(--line-2)}
+  .node.flipped .node-head{flex-direction:row-reverse}
   .port.in{cursor:default}
   .port.in:hover{background:rgba(255,255,255,.05);color:#8b96a8}
   .port .pdot{width:11px;height:11px;border-radius:50%;background:var(--panel-2);
@@ -246,6 +255,14 @@ async function api(path, body){
 
 function typeOf(nodeType){ return state.typeMap[nodeType] || null; }
 function nodeById(id){ return state.nodes.find(n => n.id === id); }
+/** 端口类型短标签，显示在端口上作为标识。 */
+function shortType(t){
+  if(t === 'RawFrame') return '帧';
+  if(t === 'IMessage') return '消息';
+  if(t === 'Any') return '任意';
+  return t || '';
+}
+
 function colorOf(t){ return TYPE_COLORS[t] || '#8a95a6'; }
 function letterOf(t){ return TYPE_LETTERS[t] || (t||'?').charAt(0).toUpperCase(); }
 
@@ -291,17 +308,21 @@ function renderNodes(){
     const err = state.errIds.has(n.id) ? ' err' : '';
     const ins = t ? t.ports.filter(p => p.direction === 'Input') : [];
     const outs = t ? t.ports.filter(p => p.direction === 'Output') : [];
-    const portHtml = `<div class="ports">
-        <div class="port-col">${ins.map(p => `
-          <div class="port in" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="in"
-               data-type="${esc(p.dataType)}" title="输入端口（连线终点，不可起拖）· ${esc(p.label)} · ${esc(p.dataType)}${p.required?' · 必连':''}">
-            <span class="pdot"></span><span class="plabel">${esc(p.label)}</span></div>`).join('')}</div>
-        <div class="port-col">${outs.map(p => `
-          <div class="port out" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="out"
-               data-type="${esc(p.dataType)}" title="输出端口（从这里拖出连线）· ${esc(p.label)} · ${esc(p.dataType)}">
-            <span class="pdot"></span><span class="plabel">${esc(p.label)}</span></div>`).join('')}</div>
-      </div>`;
-    return `<div class="node${sel}${err}" data-id="${n.id}" data-type="${esc(n.nodeType)}"
+    const inCol = `<div class="port-col in-col">${ins.map(p => `
+        <div class="port in" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="in"
+             data-type="${esc(p.dataType)}" title="输入端口（连线终点，不可起拖）· ${esc(p.label)} · ${esc(p.dataType)}${p.required?' · 必连':''}">
+          <span class="pdot"></span><span class="pdir">◀</span><span class="plabel">${esc(p.label)}</span>
+          <span class="ptype">${esc(shortType(p.dataType))}</span></div>`).join('')}</div>`;
+    const outCol = `<div class="port-col out-col">${outs.map(p => `
+        <div class="port out" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="out"
+             data-type="${esc(p.dataType)}" title="输出端口（从这里拖出连线）· ${esc(p.label)} · ${esc(p.dataType)}">
+          <span class="ptype">${esc(shortType(p.dataType))}</span>
+          <span class="plabel">${esc(p.label)}</span><span class="pdir">▶</span><span class="pdot"></span></div>`).join('')}</div>`;
+    // 翻转：输入列与输出列互换位置
+    const portHtml = n.flipped
+      ? `<div class="ports flipped">${outCol}${inCol}</div>`
+      : `<div class="ports">${inCol}${outCol}</div>`;
+    return `<div class="node${sel}${err}${n.flipped?' flipped':''}" data-id="${n.id}" data-type="${esc(n.nodeType)}"
                  style="left:${n.x}px;top:${n.y}px">
       <div class="node-head">
         <div class="ic" style="background:${colorOf(n.nodeType)}22;color:${colorOf(n.nodeType)}">${letterOf(n.nodeType)}</div>
@@ -666,7 +687,10 @@ function renderProps(){
       </div>`;
   }
 
-  html += `<div class="field"><button class="ghost danger" id="p-delete" style="width:100%">删除该节点</button></div>`;
+  html += `<div class="field-row" style="margin-bottom:11px">
+      <button class="ghost" id="p-flip" style="width:100%">${n.flipped ? '恢复左入右出' : '左右翻转'}</button>
+    </div>
+    <div class="field"><button class="ghost danger" id="p-delete" style="width:100%">删除该节点</button></div>`;
   box.innerHTML = html;
 
   const bind = (key, fn, ev) => { const el = $('p-'+key); if(el) el.addEventListener(ev||'input', fn); };
@@ -714,6 +738,13 @@ function renderProps(){
     };
   }
 
+  const flip = $('p-flip');
+  if(flip) flip.onclick = () => {
+    n.flipped = !n.flipped;
+    renderNodes(); renderProps();
+    setMsg(n.flipped ? '已左右翻转：输入在右、输出在左' : '已恢复左入右出');
+  };
+
   const del = $('p-delete');
   if(del) del.onclick = () => deleteNode(n.id);
 }
@@ -732,7 +763,8 @@ function buildGraph(){
   return {
     revision: state.status ? state.status.revision : 0,
     nodes: state.nodes.map(n => ({
-      id: n.id, nodeType: n.nodeType, label: n.label, x: n.x, y: n.y, settings: n.settings
+      id: n.id, nodeType: n.nodeType, label: n.label, x: n.x, y: n.y,
+      flipped: !!n.flipped, settings: n.settings
     })),
     edges: state.edges.map(e => ({
       id: e.id, from: e.from, fromPort: e.fromPort, to: e.to, toPort: e.toPort
