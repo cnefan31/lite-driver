@@ -157,7 +157,8 @@ public static class GraphCompiler
     /// <summary>默认节点类型目录（六个内置类型）。</summary>
     public static NodeTypeCatalog DefaultNodeTypes() => new NodeTypeCatalog()
         .Register(new BuiltInNodeTypes.ClientType())
-        .Register(new BuiltInNodeTypes.CodecType())
+        .Register(new BuiltInNodeTypes.DecoderType())
+        .Register(new BuiltInNodeTypes.EncoderType())
         .Register(new BuiltInNodeTypes.ServerType())
         .Register(new BuiltInNodeTypes.TransformType())
         .Register(new BuiltInNodeTypes.HandlerType())
@@ -213,11 +214,12 @@ public static class GraphCompiler
         foreach (var e in graph.Edges)
         {
             // 回写边不算「数据回流」：设备把处理结果写回 socket 是正当闭环。
-            // · tx   —— 设备写入通道，与 out 上的上报是两条独立单向通道
-            // · enc  —— 编解码器的编码入口，与 out 上的解码是另一条独立通道
-            // 这两条边都不构成运行时自激，应从环路判定中排除。
+            // · 目标端口是设备 tx —— 设备写入通道，与 out 上报是两条独立单向通道
+            // · 目标是编码器 —— 下行链路入口，与解码器所在的上行链路互不相干
+            // 这些边都不构成运行时自激，应从环路判定中排除。
+            var toNode = graph.Nodes.FirstOrDefault(n => n.Id == e.To);
             if (string.Equals(e.ToPort, "tx", StringComparison.Ordinal) ||
-                string.Equals(e.ToPort, "enc", StringComparison.Ordinal))
+                (toNode is not null && toNode.NodeType == "encoder"))
             {
                 continue;
             }

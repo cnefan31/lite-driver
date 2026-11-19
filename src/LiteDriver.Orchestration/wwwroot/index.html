@@ -1088,29 +1088,30 @@ async function loadInitial(){
   const hasClient = !!state.typeMap['client'];
   if(!hasClient) return;
 
-  const c = { id: uid('client'), nodeType:'client', label:'客户端', x: 40, y: 100,
-    settings: defaultSettings('client') };
-  const k = { id: uid('codec'), nodeType:'codec', label:'编解码器', x: 300, y: 100,
-    settings: defaultSettings('codec') };
-  const h = { id: uid('handler'), nodeType:'handler', label:'处理器', x: 560, y: 100,
-    settings: defaultSettings('handler') };
-  const sNode = { id: uid('server'), nodeType:'server', label:'服务端', x: 40, y: 360,
-    settings: defaultSettings('server') };
-  const k2 = { id: uid('codec'), nodeType:'codec', label:'编解码器2', x: 300, y: 360,
-    settings: defaultSettings('codec') };
-  const sink = { id: uid('sink'), nodeType:'sink', label:'出口', x: 560, y: 360,
-    settings: defaultSettings('sink') };
+  const mk = (type, label, x, y) => ({ id: uid(type), nodeType: type, label, x, y,
+    settings: defaultSettings(type) });
 
-  state.nodes = [c, k, h, sNode, k2, sink];
+  const c = mk('client', '客户端', 40, 40);
+  const dec = mk('decoder', '解码器', 300, 40);
+  const h = mk('handler', '处理器', 560, 40);
+  const enc = mk('encoder', '编码器', 820, 40);
+  const sNode = mk('server', '服务端', 40, 330);
+  const dec2 = mk('decoder', '解码器2', 300, 330);
+  const sink = mk('sink', '出口', 560, 330);
+
+  state.nodes = [c, dec, h, enc, sNode, dec2, sink];
   state.edges = [
-    // 上报链路：原始帧 → 编解码器 → 处理器
-    { id: uid('e'), from: c.id, fromPort:'out', to: k.id, toPort:'in' },
-    { id: uid('e'), from: k.id, fromPort:'out', to: h.id, toPort:'in' },
-    { id: uid('e'), from: sNode.id, fromPort:'out', to: k2.id, toPort:'in' },
-    { id: uid('e'), from: k2.id, fromPort:'out', to: sink.id, toPort:'in' }
+    // 上行：设备原始帧 → 解码器 → 处理器
+    { id: uid('e'), from: c.id, fromPort:'out', to: dec.id, toPort:'in' },
+    { id: uid('e'), from: dec.id, fromPort:'out', to: h.id, toPort:'in' },
+    { id: uid('e'), from: sNode.id, fromPort:'out', to: dec2.id, toPort:'in' },
+    { id: uid('e'), from: dec2.id, fromPort:'out', to: sink.id, toPort:'in' },
+    // 下行：处理结果 → 编码器 → 设备 tx（与上行完全解耦）
+    { id: uid('e'), from: h.id, fromPort:'ok', to: enc.id, toPort:'in' },
+    { id: uid('e'), from: enc.id, fromPort:'out', to: c.id, toPort:'tx' }
   ];
   renderNodes(); renderProps();
-  setMsg('已载入示例：客户端与服务端各自带协议和编解码器，输出去往处理器/出口（端点需按实际设备修改）');
+  setMsg('已载入示例：上行经解码器、下行经编码器，两条链路互不耦合');
 }
 
 (async () => {

@@ -33,7 +33,7 @@ public static partial class Program
             [
                 Node("c", "client", ("kindId", "length-prefix"), ("endpoints", "127.0.0.1:1")),
                 Node("s", "server", ("kindId", "length-prefix"), ("host", "127.0.0.1"), ("port", "0")),
-                Node("k", "codec", ("codecId", "text")),
+                Node("k", "decoder", ("codecId", "text")),
                 Node("h", "handler", ("handlerId", "log"))
             ],
             Edges =

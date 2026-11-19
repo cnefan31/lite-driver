@@ -226,7 +226,8 @@ public static class GraphMigration
     public static string DefaultOutputPort(string nodeType) => nodeType switch
     {
         "protocol" => "out",
-        "codec" => "out",
+        "decoder" => "out",
+        "encoder" => "out",
         "transform" => "out",
         "client" => "in",
         "server" => "conn",
@@ -236,9 +237,10 @@ public static class GraphMigration
     /// <summary>各类型的默认输入端口。</summary>
     public static string DefaultInputPort(string nodeType) => nodeType switch
     {
-        "client" => "codec",
+        "client" => "decoder",
         "server" => "conn",
-        "codec" => "in",
+        "decoder" => "in",
+        "encoder" => "in",
         "transform" => "in",
         "handler" => "in",
         "sink" => "in",

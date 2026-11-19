@@ -320,13 +320,13 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
                 continue;
             }
 
-            if (target.NodeType == "codec")
+            if (target.NodeType == "encoder")
             {
-                // 编解码器：消息从其 enc 进入、frame 输出，再继续传给下游设备
+                // 编码器：把消息序列化成原始帧，继续传给下游设备
                 foreach (var next in graph.Edges.Where(e => e.From == target.Id &&
-                                                            string.Equals(e.FromPort, "frame", StringComparison.Ordinal)))
+                                                            string.Equals(e.FromPort, "out", StringComparison.Ordinal)))
                 {
-                    pending.Enqueue((next.To, "frame"));
+                    pending.Enqueue((next.To, "out"));
                 }
 
                 results.Add(NodeSendResult.Sent(target.Id, 0, 0));
@@ -401,8 +401,8 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
     }
 
     /// <summary>
-    /// 找到连到某个设备节点 tx 的上游编解码器节点的 codecId。
-    /// 编解码器已改为独立节点，设备的编码方式由链路决定而非设备字段。
+    /// 找到连到某个设备节点 tx 的上游<b>编码器</b>节点的 codecId。
+    /// 编码器与解码器已拆分，设备的发送编码只取决于下行链路。
     /// </summary>
     private string? FindCodecForDevice(OrchestrationGraph graph, GraphNode device)
     {
@@ -417,6 +417,11 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
 
         var upstream = graph.Nodes.FirstOrDefault(n => n.Id == edge.From);
         if (upstream is null)
+        {
+            return null;
+        }
+
+        if (upstream.NodeType != "encoder")
         {
             return null;
         }
@@ -503,7 +508,7 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
         if (codecId is null)
         {
             return NodeSendResult.Fail(
-                SendStatus.NoCodec, nodeId, "该设备的发送通道未连接编解码器节点（tx 的上游缺少 codec）");
+                SendStatus.NoCodec, nodeId, "该设备的发送通道未连接编码器节点（tx 的上游缺少 encoder）");
         }
 
         var registration = _codecs.FirstOrDefault(
@@ -606,7 +611,7 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
         if (codecId is null)
         {
             return NodeSendResult.Fail(
-                SendStatus.NoCodec, nodeId, "该设备的发送通道未连接编解码器节点");
+                SendStatus.NoCodec, nodeId, "该设备的发送通道未连接编码器节点");
         }
 
         var registration = _codecs.FirstOrDefault(

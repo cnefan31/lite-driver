@@ -56,7 +56,8 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 | --- | --- | --- |
 | 客户端 `client` | `tx` 发送帧（RawFrame） | `out` 原始帧（RawFrame） |
 | 服务端 `server` | `tx` 发送帧（RawFrame） | `out` 原始帧（RawFrame） |
-| 编解码器 `codec` | `in` 原始帧、`enc` 待编码 | `out` 业务消息、`frame` 编码帧 |
+| 解码器 `decoder` | `in` 原始帧 | `out` 业务消息 |
+| 编码器 `encoder` | `in` 业务消息 | `out` 原始帧 |
 | 变换 `transform` | `in` 业务消息 | `out` 业务消息 |
 | 处理器 `handler` | `in` 业务消息 | `ok` / `retry` / `fail` 业务消息 |
 | 出口 `sink` | `in` 任意 | — |
@@ -67,24 +68,37 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 
 ```
 客户端 [RawFrame] ──✗──► 处理器 [IMessage]      类型不匹配，被拒
-客户端 [RawFrame] ──✓──► 编解码器 ──✓──► 处理器
+客户端 [RawFrame] ──✓──► 解码器 ──✓──► 处理器
 ```
 
 同理，处理结果是 `IMessage`，设备 `tx` 要 `RawFrame`，**必须经编解码器的编码方向**才能写回：
 
 ```
 处理器 ok ──✗──► 客户端 tx
-处理器 ok ──✓──► 编解码器 enc ──✓──► frame ──✓──► 客户端 tx
+处理器 ok ──✓──► 编码器 ──✓──► 客户端 tx
 ```
 
-### 编解码器的双向能力
+### 解码器与编码器分开
 
-| 输入 | 输出 | 语义 |
-| --- | --- | --- |
-| `in` | `out` | 解码：原始帧 → 业务消息 |
-| `enc` | `frame` | 编码：业务消息 → 原始帧 |
+编解码已拆成两个独立节点，**上下行各自独立配置、互不耦合**：
 
-两个方向的输入都不强制必连，可只用其一。
+| 节点 | 方向 | 输入 → 输出 | 配置 |
+| --- | --- | --- | --- |
+| `decoder` 解码器 | 上行 | `RawFrame` → `IMessage` | 自己的 `codecId` |
+| `encoder` 编码器 | 下行 | `IMessage` → `RawFrame` | 自己的 `codecId` |
+
+好处：
+
+- 上行换解析方式不影响下行序列化
+- 两端可以使用不同编解码策略（如不同协议版本）
+- 只做采集时不必接编码器，只做下发时不必接解码器
+
+```
+上行：设备 out ─RawFrame─► 解码器 ─IMessage─► 处理器
+下行：处理器 ok ─IMessage─► 编码器 ─RawFrame─► 设备 tx
+```
+
+两条链路在图上完全分开，不共享节点。
 
 ### 端口标识与翻转
 
@@ -148,7 +162,7 @@ var engine = new OrchestrationEngine(protocols, nodeTypes: nodeTypes);
 | `port_required_unconnected` | 必连输入端口没有连线 |
 | `graph_cycle` | 链路存在环路 |
 | `node_type_unknown` | 节点类型未注册 |
-| `node_invalid` | 节点自身配置非法（设备缺协议、codecId 未注册、端点格式错等） |
+| `node_invalid` | 节点自身配置非法（设备缺协议、编解码器未选或未注册、端点格式错等） |
 | `listener_port_conflict` | 两个监听节点抢占同一地址 |
 
 ## 旧图兼容

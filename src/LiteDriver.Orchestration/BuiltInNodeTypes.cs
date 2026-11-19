@@ -3,8 +3,8 @@ namespace LiteDriver.Orchestration;
 /// <summary>
 /// 内置节点类型集合。端口类型是<b>强约束</b>，不是装饰：
 /// <code>
-/// 客户端 [Web 协议] ──RawFrame──► 编解码器 ──IMessage──► 处理器 ──IMessage──► 设备 tx
-/// 服务端 [Web 协议] ──RawFrame──► 编解码器 ──IMessage──► 出口
+/// 客户端 [协议] ──RawFrame──► 解码器 ──IMessage──► 处理器 ──IMessage──► 编码器 ──RawFrame──► 设备 tx
+/// 服务端 [协议] ──RawFrame──► 解码器 ──IMessage──► 出口
 /// </code>
 /// 设备节点只产出 <c>RawFrame</c>，处理器只接受 <c>IMessage</c>，
 /// 因此「客户端直连处理器」会被类型校验拒绝——必须经过编解码器。
@@ -18,30 +18,34 @@ public static class BuiltInNodeTypes
     /// 两者之间<b>必须</b>经过本节点，否则连线会被类型校验拒绝。
     /// </para>
     /// </summary>
-    public sealed class CodecType : INodeType
+    /// <summary>
+    /// 解码器节点：原始帧 → 业务消息（上行链路）。
+    /// <para>
+    /// 与编码器<b>分开</b>：上行只负责把设备上报的帧解析成消息，
+    /// 下行只负责把消息序列化成帧。两者各自配置 codecId，
+    /// 因此上下行可以用不同编解码策略而互不耦合。
+    /// </para>
+    /// </summary>
+    public sealed class DecoderType : INodeType
     {
-        public string TypeId => "codec";
+        public string TypeId => "decoder";
 
-        public string DisplayName => "编解码器";
+        public string DisplayName => "解码器";
 
-        public string Description => "双向转换：in/out 解码（原始帧→消息），enc/frame 编码（消息→原始帧）。设备不能直连处理器，也不能直连处理器结果。";
+        public string Description => "上行：原始帧 → 业务消息。只管解码，不参与下发。";
 
         public bool IsSource => false;
 
         public IReadOnlyList<PortSpec> Ports { get; } =
         [
-            // 解码方向：原始帧 → 业务消息
-            // 两个方向都不强制必连：可能只用解码（采集）或只用编码（下发）
-            new PortSpec("in", "原始帧", PortDirection.Input, PortTypes.RawFrame),
-            new PortSpec("out", "业务消息", PortDirection.Output, PortTypes.Message),
-            // 编码方向：业务消息 → 原始帧（把处理结果转回帧，才能写回设备）
-            new PortSpec("enc", "待编码", PortDirection.Input, PortTypes.Message),
-            new PortSpec("frame", "编码帧", PortDirection.Output, PortTypes.RawFrame)
+            new PortSpec("in", "原始帧", PortDirection.Input, PortTypes.RawFrame, required: true),
+            new PortSpec("out", "业务消息", PortDirection.Output, PortTypes.Message)
         ];
 
         public IReadOnlyList<NodeField> Fields { get; } =
         [
-            new NodeField("codecId", "编解码器", NodeFieldKind.Select, "", "宿主注册的编解码器", OptionsSource: "codecs")
+            new NodeField("codecId", "解码器", NodeFieldKind.Select, "", "宿主注册的编解码器（解码侧）",
+                OptionsSource: "codecs")
         ];
 
         public string? Validate(GraphNode node, INodeTypeCatalogView catalog)
@@ -49,7 +53,48 @@ public static class BuiltInNodeTypes
             var codecId = node.Get("codecId").Trim();
             if (codecId.Length == 0)
             {
-                return "未选择编解码器";
+                return "未选择解码器";
+            }
+
+            return catalog.HasCodec(codecId) ? null : $"编解码器 '{codecId}' 未注册";
+        }
+    }
+
+    /// <summary>
+    /// 编码器节点：业务消息 → 原始帧（下行链路）。
+    /// <para>
+    /// 与解码器分开，便于下行单独配置策略（例如不同的序列化版本），
+    /// 不会因为调整上行而影响下行。
+    /// </para>
+    /// </summary>
+    public sealed class EncoderType : INodeType
+    {
+        public string TypeId => "encoder";
+
+        public string DisplayName => "编码器";
+
+        public string Description => "下行：业务消息 → 原始帧。只管编码，不参与上报解析。";
+
+        public bool IsSource => false;
+
+        public IReadOnlyList<PortSpec> Ports { get; } =
+        [
+            new PortSpec("in", "业务消息", PortDirection.Input, PortTypes.Message, required: true),
+            new PortSpec("out", "原始帧", PortDirection.Output, PortTypes.RawFrame)
+        ];
+
+        public IReadOnlyList<NodeField> Fields { get; } =
+        [
+            new NodeField("codecId", "编码器", NodeFieldKind.Select, "", "宿主注册的编解码器（编码侧）",
+                OptionsSource: "codecs")
+        ];
+
+        public string? Validate(GraphNode node, INodeTypeCatalogView catalog)
+        {
+            var codecId = node.Get("codecId").Trim();
+            if (codecId.Length == 0)
+            {
+                return "未选择编码器";
             }
 
             return catalog.HasCodec(codecId) ? null : $"编解码器 '{codecId}' 未注册";

@@ -35,11 +35,24 @@ def main():
     types = call("/api/nodetypes")
     ids = [t["typeId"] for t in types]
     print(f"节点类型 {len(types)} 种: {ids}")
-    for need in ("client", "codec", "server", "transform", "handler", "sink"):
+    for need in ("client", "decoder", "encoder", "server", "transform", "handler", "sink"):
         if need not in ids:
             failures += fail(f"缺少节点类型 {need}")
     if "protocol" in ids:
         failures += fail("协议不应再是独立节点（它是设备自身字段）")
+    if "codec" in ids:
+        failures += fail("编解码器应拆分为 decoder / encoder，不应再有合并节点 codec")
+
+    # 解码器只做上行、编码器只做下行
+    dec = next(x for x in types if x["typeId"] == "decoder")
+    enc_t = next(x for x in types if x["typeId"] == "encoder")
+    dports = {p["id"]: p["dataType"] for p in dec["ports"]}
+    eports = {p["id"]: p["dataType"] for p in enc_t["ports"]}
+    if dports.get("in") != "RawFrame" or dports.get("out") != "IMessage":
+        failures += fail(f"解码器端口应为 RawFrame→IMessage，实际 {dports}")
+    if eports.get("in") != "IMessage" or eports.get("out") != "RawFrame":
+        failures += fail(f"编码器端口应为 IMessage→RawFrame，实际 {eports}")
+    print("  解码器 RawFrame→IMessage，编码器 IMessage→RawFrame（上下行分离）")
 
     # 2) 设备节点：tx 发送输入 + out 上报输出；协议与编解码器是自身字段
     for dev in ("client", "server"):
@@ -71,17 +84,17 @@ def main():
 
     good = call("/api/connectable", {
         "fromNodeType": "client", "fromPort": "out",
-        "toNodeType": "codec", "toPort": "in"})
+        "toNodeType": "decoder", "toPort": "in"})
     if not good["ok"]:
         failures += fail("客户端→编解码器 被误拒")
-    print("  客户端→编解码器 允许")
+    print("  客户端→解码器 允许")
 
     enc = call("/api/connectable", {
-        "fromNodeType": "codec", "fromPort": "frame",
+        "fromNodeType": "encoder", "fromPort": "out",
         "toNodeType": "client", "toPort": "tx"})
     if not enc["ok"]:
         failures += fail("编解码器编码输出→设备tx 被误拒")
-    print("  编解码器 frame→设备 tx 允许")
+    print("  编码器→设备 tx 允许")
 
     # 3) 首次应用：完整链路（客户端→编解码→处理器；服务端 Port=0）
     graph = {
@@ -93,9 +106,11 @@ def main():
             {"id": "cli", "nodeType": "client", "label": "客户端", "x": 40, "y": 90,
              "settings": {"kindId": "length-prefix",
                           "endpoints": "127.0.0.1:1"}},
-            {"id": "k1", "nodeType": "codec", "label": "编解码器1", "x": 300, "y": 90,
+            {"id": "k1", "nodeType": "decoder", "label": "解码器1", "x": 300, "y": 90,
              "settings": {"codecId": "text"}},
-            {"id": "k2", "nodeType": "codec", "label": "编解码器2", "x": 300, "y": 340,
+            {"id": "k2", "nodeType": "decoder", "label": "解码器2", "x": 300, "y": 340,
+             "settings": {"codecId": "text"}},
+            {"id": "e1", "nodeType": "encoder", "label": "编码器1", "x": 560, "y": 210,
              "settings": {"codecId": "text"}},
             {"id": "h", "nodeType": "handler", "label": "处理器", "x": 560, "y": 90,
              "settings": {"handlerId": "log", "mode": "log"}},
@@ -107,6 +122,9 @@ def main():
             {"id": "e2", "from": "k1", "fromPort": "out", "to": "h", "toPort": "in"},
             {"id": "e3", "from": "srv", "fromPort": "out", "to": "k2", "toPort": "in"},
             {"id": "e4", "from": "k2", "fromPort": "out", "to": "sk", "toPort": "in"},
+            # 下行：处理器结果 → 编码器 → 客户端 tx
+            {"id": "e5", "from": "h", "fromPort": "ok", "to": "e1", "toPort": "in"},
+            {"id": "e6", "from": "e1", "fromPort": "out", "to": "cli", "toPort": "tx"},
         ],
     }
     r1 = call("/api/apply", graph)
@@ -163,9 +181,9 @@ def main():
 
     # 6) 运行期新增服务端节点（不重启），必须经编解码器才合法
     graph["nodes"].append({"id": "srv2", "nodeType": "server", "label": "服务端2",
-                           "settings": {"kindId": "length-prefix", "codecId": "text",
+                           "settings": {"kindId": "length-prefix",
                                         "host": "127.0.0.1", "port": "0", "maxSessions": "4"}})
-    graph["nodes"].append({"id": "k3", "nodeType": "codec", "label": "编解码器3", "x": 300, "y": 500,
+    graph["nodes"].append({"id": "k3", "nodeType": "decoder", "label": "解码器3", "x": 300, "y": 500,
                            "settings": {"codecId": "text"}})
     graph["edges"].append({"id": "e5", "from": "srv2", "fromPort": "out", "to": "k3", "toPort": "in"})
     graph["edges"].append({"id": "e6", "from": "k3", "fromPort": "out", "to": "sk", "toPort": "in"})
@@ -201,9 +219,7 @@ def main():
             failures += fail(f"{dev} 缺少发送输入端口 tx")
     print("  设备节点具备 tx 发送输入端口")
 
-    # 8b) 闭环：处理器 ok -> 编解码器 enc -> frame -> 客户端 tx
-    graph["edges"].append({"id": "e7", "from": "h", "fromPort": "ok", "to": "k1", "toPort": "enc"})
-    graph["edges"].append({"id": "e8", "from": "k1", "fromPort": "frame", "to": "cli", "toPort": "tx"})
+    # 8b) 闭环已在初始图建立，此处验证按结果路由
     rclose = call("/api/apply", graph)
     if not rclose["ok"]:
         failures += fail(f"闭环应用失败: {rclose['issues']}")
