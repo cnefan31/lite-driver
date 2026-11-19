@@ -210,10 +210,10 @@ public sealed class PayloadCodecTests
         var port = driver.GetListenerPorts()["gw"];
         using var client = new System.Net.Sockets.TcpClient();
         await client.ConnectAsync(System.Net.IPAddress.Loopback, port);
-        var stream = client.GetStream();
-        await stream.WriteAsync("inbound-text"u8.ToArray());
-        await stream.FlushAsync();
 
+        // 必须先等 accept 完成、会话注册后再写数据。
+        // 若连上就立刻写，数据可能在会话 Context 建立前到达，
+        // 在慢速 CI 上会表现为帧丢失（本地快机器不会复现）。
         InboundSessionHandle session = default;
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (DateTime.UtcNow < deadline && !session.IsValid)
@@ -229,6 +229,11 @@ public sealed class PayloadCodecTests
         }
 
         Assert.True(session.IsValid);
+
+        var stream = client.GetStream();
+        await stream.WriteAsync("inbound-text"u8.ToArray());
+        await stream.FlushAsync();
+
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         using var frame = await session.ReceiveAsync(cts.Token);
 

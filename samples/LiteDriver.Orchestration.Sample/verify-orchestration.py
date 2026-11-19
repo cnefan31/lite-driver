@@ -118,8 +118,16 @@ def main():
     r2 = call("/api/apply", graph)
     if not r2["ok"]:
         failures += fail(f"热更新失败: {r2['issues']}")
-    time.sleep(4)
-    st = call("/api/state")
+    # 轮询等待链路真正建立：客户端 Ready 与入站会话登记不是同一时刻完成，
+    # 固定 sleep 在慢速 CI 上会读到 inboundSessions=0。
+    st = None
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        st = call("/api/state")
+        if st["readyClients"] >= 1 and st["inboundSessions"] >= 1:
+            break
+        time.sleep(0.5)
+
     print(f"  readyClients={st['readyClients']} inboundSessions={st['inboundSessions']}")
     if st["readyClients"] < 1:
         failures += fail("客户端未就绪")
