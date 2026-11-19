@@ -515,6 +515,43 @@ public sealed class OrchestrationCompilerTests
     // ---------------- 其它 ----------------
 
     [Fact]
+    public void Placeholder_ShouldNotAffectCompilation()
+    {
+        // 占位节点纯布局，没有端口，不应产生任何校验问题
+        var g = Graph([Client("c"), Decoder("d"), Handler("h"), Node("ph", "placeholder")],
+            ("c", "out", "d", "in"), ("d", "out", "h", "in"));
+
+        var result = Compile(g);
+        Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
+    }
+
+    [Fact]
+    public void Placeholder_ShouldHaveNoPorts()
+    {
+        var t = Types.Find("placeholder")!;
+        Assert.Empty(t.Ports);
+        Assert.True(t.IsLayoutOnly);
+    }
+
+    [Fact]
+    public void Placeholder_ShouldNotRequireConnection()
+    {
+        // 孤立占位不应触发 port_required_unconnected
+        var g = Graph([Node("only", "placeholder")]);
+        var result = Compile(g);
+        Assert.DoesNotContain(result.Issues, i => i.Code == "port_required_unconnected");
+    }
+
+    [Fact]
+    public void Color_ShouldPersistThroughClone()
+    {
+        var g = Graph([Client("c")]);
+        g.Nodes[0].Color = "#ff6b81";
+        var copy = g.Clone();
+        Assert.Equal("#ff6b81", copy.Nodes[0].Color);
+    }
+
+    [Fact]
     public void Flipped_ShouldPersistThroughClone()
     {
         // 左右翻转是布局属性，需随图保存与恢复

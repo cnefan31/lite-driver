@@ -350,6 +350,38 @@ public static class BuiltInNodeTypes
             return catalog.HasSink(id) ? null : $"出口 '{id}' 未注册";
         }
     }
+
+    /// <summary>
+    /// 占位节点：仅用于布局，不参与任何数据流。
+    /// <para>
+    /// 作用：在图里放一个或多个锚点占位，用于把连线撑开、绕开拥挤区域，
+    /// 或让某个端口的走线从指定位置经过，从而改善整体布局。
+    /// 占位节点没有端口、不校验、不运行，编译时会被忽略。
+    /// </para>
+    /// </summary>
+    public sealed class PlaceholderType : INodeType
+    {
+        public string TypeId => "placeholder";
+
+        public string DisplayName => "占位";
+
+        public string Description => "仅用于布局占位：没有端口、不参与数据流，用来撑开走线空间。";
+
+        /// <summary>占位不产生数据，也不接收数据。</summary>
+        public bool IsSource => false;
+
+        /// <summary>占位节点仅用于布局，不参与编译，因此无需端口。</summary>
+        public bool IsLayoutOnly => true;
+
+        public IReadOnlyList<PortSpec> Ports { get; } = [];
+
+        public IReadOnlyList<NodeField> Fields { get; } =
+        [
+            new NodeField("note", "备注", NodeFieldKind.Text, "", "说明这个占位用来做什么")
+        ];
+
+        public string? Validate(GraphNode node, INodeTypeCatalogView catalog) => null;
+    }
 }
 
 /// <summary>

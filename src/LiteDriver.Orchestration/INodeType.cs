@@ -21,6 +21,12 @@ public interface INodeType
     /// <summary>是否可作为链路起点（出站侧）。</summary>
     bool IsSource { get; }
 
+    /// <summary>
+    /// 是否为纯布局节点：没有端口、不参与编译与运行，仅用于撑开走线空间。
+    /// 默认 <c>false</c>。
+    /// </summary>
+    bool IsLayoutOnly => false;
+
     /// <summary>该类型声明的端口。</summary>
     IReadOnlyList<PortSpec> Ports { get; }
 

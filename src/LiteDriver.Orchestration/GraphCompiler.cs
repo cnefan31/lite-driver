@@ -68,6 +68,12 @@ public static class GraphCompiler
                 continue;
             }
 
+            // 占位节点是纯布局元素，跳过业务校验
+            if (type.IsLayoutOnly)
+            {
+                continue;
+            }
+
             var error = type.Validate(node, view);
             if (error is not null)
             {
@@ -78,6 +84,19 @@ public static class GraphCompiler
         // ---- 2) 连线：端口存在性 + 方向 + 类型兼容 ----
         foreach (var edge in graph.Edges)
         {
+            // 端点若是占位节点，该边不参与数据流（占位仅布局用），直接跳过
+            if (nodeMap.TryGetValue(edge.From, out var fromProbe) &&
+                types.Find(fromProbe.NodeType)?.IsLayoutOnly == true)
+            {
+                continue;
+            }
+
+            if (nodeMap.TryGetValue(edge.To, out var toProbe) &&
+                types.Find(toProbe.NodeType)?.IsLayoutOnly == true)
+            {
+                continue;
+            }
+
             if (!nodeMap.TryGetValue(edge.From, out var from))
             {
                 issues.Add(new CompileIssue("edge_from_missing", $"连线起点 '{edge.From}' 不存在", edge.From));
@@ -162,7 +181,8 @@ public static class GraphCompiler
         .Register(new BuiltInNodeTypes.ServerType())
         .Register(new BuiltInNodeTypes.TransformType())
         .Register(new BuiltInNodeTypes.HandlerType())
-        .Register(new BuiltInNodeTypes.SinkType());
+        .Register(new BuiltInNodeTypes.SinkType())
+        .Register(new BuiltInNodeTypes.PlaceholderType());
 
     /// <summary>检查每条链路的必连端口是否都有连线。</summary>
     private static void CheckRequiredPorts(

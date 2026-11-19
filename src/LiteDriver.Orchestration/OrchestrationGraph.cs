@@ -40,6 +40,12 @@ public sealed class GraphNode
     public bool Flipped { get; set; }
 
     /// <summary>
+    /// 自定义强调色（如 <c>#4c8dff</c>）。为空则用节点类型默认色。
+    /// 仅用于视觉归类，不参与语义与校验。
+    /// </summary>
+    public string? Color { get; set; }
+
+    /// <summary>
     /// 节点参数。键由各 <see cref="INodeType.Fields"/> 声明；
     /// 值统一用字符串存储，便于前端直接编辑与 JSON 往返。
     /// </summary>
@@ -105,6 +111,7 @@ public sealed class OrchestrationGraph
             X = n.X,
             Y = n.Y,
             Flipped = n.Flipped,
+            Color = n.Color,
             Settings = new Dictionary<string, string>(n.Settings, StringComparer.Ordinal)
         })],
         Edges = [.. Edges.Select(e => new GraphEdge

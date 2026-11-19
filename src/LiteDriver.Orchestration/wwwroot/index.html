@@ -57,7 +57,11 @@
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
   /* 画布 */
-  .canvas-wrap{position:relative;overflow:hidden;
+  /* 无限画布：world 是一个超大虚拟平面，用 transform 平移缩放 */
+  .world{position:absolute;left:0;top:0;width:12000px;height:12000px;
+    transform-origin:0 0;will-change:transform}
+  .canvas-wrap{position:relative;overflow:hidden;cursor:grab;
+
     background:radial-gradient(circle at 1px 1px,rgba(255,255,255,.045) 1px,transparent 0) 0 0/20px 20px,
     var(--canvas)}
   /* 不能用 none：父级 none 会阻断子 path 的 pointer-events:stroke 命中，
@@ -66,7 +70,7 @@
      若把 svg 抬到节点之上，线条会横穿卡片，视觉上一团乱。
      命中问题改用「canvas 本身不拦截、热区单独可点」解决，见 .canvas 与 path[data-edge]。 */
   /* 可见连线在节点之下；命中用独立的上层热区层，两者不互相遮挡。 */
-  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible}
   /* 热区在最上层，才能点到被节点覆盖的线段；宽度收窄到 12 以免大面积遮挡节点拖动。 */
   svg.wirehits{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:6}
   svg.wirehits path{pointer-events:stroke}
@@ -76,7 +80,7 @@
   .canvas .node{pointer-events:auto}
 
   /* 节点 */
-  .node{position:absolute;width:230px;border-radius:10px;background:var(--panel);
+  .node{position:absolute;width:300px;border-radius:10px;background:var(--panel);
     border:1px solid var(--line-2);box-shadow:0 6px 18px rgba(0,0,0,.34);cursor:grab;
     user-select:none;transition:box-shadow .13s,border-color .13s}
   .node:hover{border-color:#48536a}
@@ -90,8 +94,10 @@
     white-space:nowrap;flex:1}
   .node-body{padding:7px 10px 9px;font-size:11px;color:var(--muted);line-height:1.5}
   .node-body .kv{display:flex;justify-content:space-between;gap:6px}
+  .node-body .kv{display:flex;justify-content:space-between;gap:8px;min-width:0}
+  .node-body .kv span:first-child{flex:0 0 auto;color:var(--muted)}
   .node-body .kv span:last-child{color:#bdc6d4;font-family:var(--mono);font-size:10.5px;
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}
   /* 端口单列铺满：每行一个端口，连接圆点绝对定位压在节点边框上。
      这是 React Flow / litegraph 等编辑器的通行做法：
      锚点不参与内容流，因此永远不会因宽度或顺序变化跑到中间。 */
@@ -102,7 +108,7 @@
      —— 这与 React Flow 的 Handle 实现一致。 */
   .port{position:relative;display:flex;align-items:center;gap:6px;
     font:10px var(--mono);color:#8b96a8;cursor:crosshair;
-    padding:2px 0;min-height:20px;transition:.12s;
+    padding:2px 0;min-height:20px;gap:5px;transition:.12s;
     -webkit-user-select:none;user-select:none}
 
   .port .pdot{position:absolute;top:50%;transform:translateY(-50%);
@@ -110,11 +116,11 @@
     border:2px solid var(--line-2);transition:.12s;z-index:1}
 
   /* 输入：圆点在左边框，内容从圆点右侧开始 */
-  .port.in{justify-content:flex-start;padding-left:14px;padding-right:10px}
+  .port.in{justify-content:flex-start;padding-left:14px;padding-right:10px;min-width:0}
   .port.in .pdot{left:-6px}
 
   /* 输出：圆点在右边框，内容向圆点靠右 */
-  .port.out{justify-content:flex-end;padding-left:10px;padding-right:14px}
+  .port.out{justify-content:flex-end;padding-left:10px;padding-right:14px;min-width:0}
   .port.out .pdot{right:-6px}
 
   .port.compat .pdot{background:var(--ok);border-color:var(--ok);box-shadow:0 0 6px var(--ok)}
@@ -128,6 +134,37 @@
   .node.flipped .port.out .pdot{right:auto;left:-6px}
 
   .port .plabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+  /* 明确的输入/输出标识：一眼可辨方向 */
+  .color-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .swatch{width:20px;height:20px;border-radius:5px;border:1.5px solid var(--line-2);
+    background:var(--sw);cursor:pointer;padding:0;transition:.12s}
+  .swatch:hover{transform:scale(1.1)}
+  .swatch.on{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.28)}
+  .zoom-ctl{display:flex;align-items:center;gap:4px}
+  .zoom-ctl #zoomLabel{min-width:38px;text-align:center;color:#aab4c4}
+  .zbtn{background:var(--panel-2);border:1px solid var(--line-2);color:var(--muted);
+    border-radius:4px;padding:1px 6px;font:10.5px var(--mono);cursor:pointer}
+  .zbtn:hover{color:var(--ink);border-color:var(--accent)}
+  .zbtn.wide{padding:1px 7px}
+  .mini-select{padding:4px 8px;border-radius:6px;border:1px solid var(--line-2);
+    background:var(--panel);color:var(--ink);font-size:11.5px;cursor:pointer}
+  .port .pio{font:8.5px var(--mono);font-weight:600;letter-spacing:.04em;
+    padding:1px 4px;border-radius:3px;flex:0 0 auto;line-height:1.3}
+  .port .pio.in{background:rgba(88,166,255,.16);color:#7fb6ff;border:1px solid rgba(88,166,255,.34)}
+  .port .pio.out{background:rgba(126,231,135,.14);color:#7ee787;border:1px solid rgba(126,231,135,.32)}
+
+  /* 布局占位节点 */
+  .node.placeholder{width:150px;background:transparent;border:1.5px dashed var(--line-2);
+    box-shadow:none;opacity:.72}
+  .node.placeholder .node-head{background:transparent;border-bottom:none}
+  .ph-body{display:flex;align-items:center;justify-content:center;gap:6px;
+    padding:14px 0 18px;color:var(--muted);font-size:11px}
+  .ph-ic{font-size:14px;opacity:.7}
+
+  /* 节点强调色：标题栏左侧竖条 + 边框淡着色 */
+  .node::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;
+    border-radius:0 3px 3px 0;background:var(--accent-node,transparent);opacity:.85}
+  .node.sel{border-color:var(--accent-node,var(--accent))}
   .port .pdir{font-size:8px;color:#5c6878;flex:0 0 auto}
   .port:hover{background:rgba(76,141,255,.14);color:var(--accent)}
   /* 注意：翻转靠交换 DOM 列顺序实现（见 renderNodes），
@@ -204,6 +241,12 @@
     <span class="chip">rev <b id="sRev">0</b></span>
   </div>
   <div class="spacer"></div>
+  <select id="edgeStyle" class="mini-select" title="连线样式">
+    <option value="bezier">曲线</option>
+    <option value="smoothstep">圆角折线</option>
+    <option value="step">直角折线</option>
+    <option value="straight">直线</option>
+  </select>
   <button class="ghost" id="btnEvents">事件</button>
   <button class="ghost" id="btnValidate">校验</button>
   <button class="primary" id="btnApply">保存并应用</button>
@@ -220,10 +263,13 @@
   </aside>
 
   <div class="canvas-wrap" id="canvasWrap">
-    <svg class="wires" id="wires"></svg>
-    <div class="canvas" id="canvas"></div>
-    <!-- 热区层：位于节点之上，只包含可点击的粗描边（透明），负责删线命中 -->
-    <svg class="wirehits" id="wirehits"></svg>
+    <!-- world：承载全部内容，通过 translate+scale 实现无限画布 -->
+    <div class="world" id="world">
+      <svg class="wires" id="wires"></svg>
+      <div class="canvas" id="canvas"></div>
+      <!-- 热区层：位于节点之上，只包含可点击的粗描边（透明），负责删线命中 -->
+      <svg class="wirehits" id="wirehits"></svg>
+    </div>
     <div class="linkhint" id="linkHint">松开以连接到高亮的输入端口 · Esc 取消</div>
     <div class="drawer" id="drawer">
       <h4><span>事件流</span><span id="drawerClose" style="cursor:pointer">✕</span></h4>
@@ -241,6 +287,13 @@
 
 <div class="statusbar">
   <span class="msg" id="msg">就绪</span>
+  <span class="zoom-ctl">
+    <button class="zbtn" id="zoomOut" title="缩小">−</button>
+    <span id="zoomLabel">100%</span>
+    <button class="zbtn" id="zoomIn" title="放大">+</button>
+    <button class="zbtn wide" id="zoomFit" title="适应画布">适应</button>
+    <button class="zbtn wide" id="zoomReset" title="重置视图">100%</button>
+  </span>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -248,7 +301,8 @@
 'use strict';
 
 const state = {
-  nodes: [], edges: [],
+  nodes: [], edges: [], edgeStyle: 'bezier',
+  view: { x: 0, y: 0, zoom: 1 },
   nodeTypes: [],        // NodeTypeInfo[]
   typeMap: {},          // typeId -> NodeTypeInfo
   selected: null,
@@ -260,7 +314,70 @@ const state = {
 };
 
 const $ = id => document.getElementById(id);
-const canvas = $('canvas'), wires = $('wires'), wirehits = $('wirehits'), wrap = $('canvasWrap');
+const canvas = $('canvas'), wires = $('wires'), wirehits = $('wirehits'),
+      wrap = $('canvasWrap'), world = $('world');
+
+/**
+ * 视图变换：把 world 坐标映射到屏幕。
+ * 所有命中测试与拖拽都走 worldToScreen / screenToWorld，避免缩放后坐标错乱。
+ */
+function applyView(){
+  const v = state.view;
+  world.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.zoom})`;
+  const z = $('zoomLabel');
+  if(z) z.textContent = Math.round(v.zoom * 100) + '%';
+}
+
+/** 屏幕坐标（clientX/Y）→ world 坐标 */
+function screenToWorld(clientX, clientY){
+  const r = wrap.getBoundingClientRect();
+  const v = state.view;
+  return { x: (clientX - r.left - v.x) / v.zoom, y: (clientY - r.top - v.y) / v.zoom };
+}
+
+/** world 坐标 → 屏幕坐标 */
+function worldToScreen(x, y){
+  const r = wrap.getBoundingClientRect();
+  const v = state.view;
+  return { x: r.left + x * v.zoom + v.x, y: r.top + y * v.zoom + v.y };
+}
+
+/** 以某个屏幕点为锚缩放，保证该点下的内容不动 */
+function zoomAt(clientX, clientY, factor){
+  const v = state.view;
+  const next = Math.min(2.5, Math.max(0.25, v.zoom * factor));
+  if(next === v.zoom) return;
+  const r = wrap.getBoundingClientRect();
+  const px = clientX - r.left, py = clientY - r.top;
+  // 保持锚点对应的 world 坐标不变
+  v.x = px - (px - v.x) * (next / v.zoom);
+  v.y = py - (py - v.y) * (next / v.zoom);
+  v.zoom = next;
+  applyView();
+  drawWires();
+}
+
+/** 缩放到适配全部节点 */
+function fitView(){
+  if(!state.nodes.length){ state.view = {x:0,y:0,zoom:1}; applyView(); return; }
+  const r = wrap.getBoundingClientRect();
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for(const n of state.nodes){
+    const w = n.nodeType === 'placeholder' ? 150 : 300;
+    const h = 200;
+    minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + w); maxY = Math.max(maxY, n.y + h);
+  }
+  const pad = 60;
+  const zx = (r.width - pad * 2) / Math.max(1, maxX - minX);
+  const zy = (r.height - pad * 2) / Math.max(1, maxY - minY);
+  const zoom = Math.min(1.4, Math.max(0.25, Math.min(zx, zy)));
+  state.view.zoom = zoom;
+  state.view.x = (r.width - (maxX - minX) * zoom) / 2 - minX * zoom;
+  state.view.y = (r.height - (maxY - minY) * zoom) / 2 - minY * zoom;
+  applyView();
+  drawWires();
+}
 
 const TYPE_COLORS = {
   protocol:'#8b6ce8', client:'#4c8dff', server:'#3ecf8e',
@@ -297,6 +414,16 @@ function shortType(t){
   if(t === 'Any') return '任意';
   return t || '';
 }
+
+/** 预设节点色：用于按功能归类。空值表示沿用类型默认色。 */
+const NODE_COLORS = [
+  { v:'',        n:'默认' },
+  { v:'#4c8dff', n:'蓝 · 设备' },
+  { v:'#7ee787', n:'绿 · 服务' },
+  { v:'#b48bff', n:'紫 · 处理' },
+  { v:'#ffb454', n:'橙 · 编解码' },
+  { v:'#ff6b81', n:'红 · 告警' }
+];
 
 function colorOf(t){ return TYPE_COLORS[t] || '#8a95a6'; }
 function letterOf(t){ return TYPE_LETTERS[t] || (t||'?').charAt(0).toUpperCase(); }
@@ -349,16 +476,27 @@ function renderNodes(){
     const inRows = ins.map(p => `
         <div class="port in" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="in"
              data-type="${esc(p.dataType)}" title="输入端口（连线终点）· ${esc(p.label)} · ${esc(p.dataType)}${p.required?' · 必连':''}">
-          <span class="pdot"></span><span class="plabel">${esc(p.label)}</span><span class="ptype">${esc(shortType(p.dataType))}</span></div>`).join('');
+          <span class="pdot"></span>
+          <span class="pio in">输入</span>
+          <span class="plabel">${esc(p.label)}</span>
+          <span class="ptype">${esc(shortType(p.dataType))}</span></div>`).join('');
     const outRows = outs.map(p => `
         <div class="port out" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="out"
              data-type="${esc(p.dataType)}" title="输出端口（从这里拖出连线）· ${esc(p.label)} · ${esc(p.dataType)}">
-          <span class="plabel">${esc(p.label)}</span><span class="ptype">${esc(shortType(p.dataType))}</span><span class="pdot"></span></div>`).join('');
-    const portHtml = `<div class="ports">${inRows}${outRows}</div>`;
-    return `<div class="node${sel}${err}${n.flipped?' flipped':''}" data-id="${n.id}" data-type="${esc(n.nodeType)}"
-                 style="left:${n.x}px;top:${n.y}px">
+          <span class="ptype">${esc(shortType(p.dataType))}</span>
+          <span class="plabel">${esc(p.label)}</span>
+          <span class="pio out">输出</span>
+          <span class="pdot"></span></div>`).join('');
+    const layoutOnly = !!t && t.ports.length === 0 && n.nodeType === 'placeholder';
+    const portHtml = layoutOnly
+      ? `<div class="ph-body"><span class="ph-ic">⤢</span><span>布局占位</span></div>`
+      : `<div class="ports">${inRows}${outRows}</div>`;
+    const accent = n.color || colorOf(n.nodeType);
+    const phClass = layoutOnly ? ' placeholder' : '';
+    return `<div class="node${sel}${err}${n.flipped?' flipped':''}${phClass}" data-id="${n.id}" data-type="${esc(n.nodeType)}"
+                 style="left:${n.x}px;top:${n.y}px;--accent-node:${accent}">
       <div class="node-head">
-        <div class="ic" style="background:${colorOf(n.nodeType)}22;color:${colorOf(n.nodeType)}">${letterOf(n.nodeType)}</div>
+        <div class="ic" style="background:${accent}22;color:${accent}">${letterOf(n.nodeType)}</div>
         <div class="nm">${esc(n.label || (t?t.displayName:n.nodeType))}</div>
       </div>
       ${portHtml}
@@ -387,9 +525,10 @@ function markLinked(){
 function portAnchor(nodeId, portId){
   const el = canvas.querySelector(`.port[data-node="${nodeId}"][data-port="${portId}"] .pdot`);
   if(!el) return null;
-  const r = el.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
-  const cx = r.left - wr.left + r.width/2;
-  const cy = r.top - wr.top + r.height/2;
+  // 端口圆心的 world 坐标（svg 在 world 内绘制，必须用 world 系）
+  const r = el.getBoundingClientRect();
+  const c = screenToWorld(r.left + r.width/2, r.top + r.height/2);
+  const cx = c.x, cy = c.y;
 
   // 朝向取圆点到「所在行内容」的方向：
   // 输入端口默认朝左、输出朝右；节点翻转后相反。
@@ -402,10 +541,9 @@ function portAnchor(nodeId, portId){
 
   // 节点包围盒（与端口同一坐标系），供绕行路由避开整个节点而非仅避开端口
   const nr = nodeEl.getBoundingClientRect();
-  const box = {
-    l: nr.left - wr.left, r: nr.right - wr.left,
-    t: nr.top - wr.top, b: nr.bottom - wr.top
-  };
+  const tl = screenToWorld(nr.left, nr.top);
+  const br = screenToWorld(nr.right, nr.bottom);
+  const box = { l: tl.x, r: br.x, t: tl.y, b: br.y };
   return { x: cx, y: cy, dir, box };
 }
 
@@ -415,43 +553,61 @@ function portAnchor(nodeId, portId){
  * 保证曲线不会绕入节点矩形。
  */
 /**
- * 生成端口间的连线路径。
- * - 正常情况（出口朝向目标）：三次贝塞尔，两端沿端口法线出入。
- * - 端口朝向与目标相反（如节点翻转后输出端口位于左边缘、目标却在右侧）：
- *   若仍直接出线必然横穿自身节点，故改为正交绕行——先沿法线出一小段，
- *   纵向让到节点带外，再水平走到目标侧，最后进入端口。
+ * 生成端口间连线路径。支持多种走线风格，可全局切换：
+ *  - bezier     : 单段三次贝塞尔（React Flow 默认）
+ *  - smoothstep : 圆角正交（水平/垂直段 + 圆角）
+ *  - step       : 直角折线
+ *  - straight   : 直线（带短出线）
+ * 控制点/出线一律沿端口法线，保证不横穿节点。
  */
-function linkPath(a, b){
+function linkPath(a, b, style){
   const dx = b.x - a.x;
-  const towards = Math.sign(dx) || 1;
-  const stub = 18;
+  const dy = b.y - a.y;
+  const k = Math.max(28, Math.min(Math.abs(dx) * 0.5, 180));
+  const stub = 16;
 
-  const aFacesTarget = a.dir === towards;
-  const bFacesTarget = b.dir === -towards;
-
-  if(aFacesTarget && bFacesTarget){
-    const k = Math.max(24, Math.min(Math.abs(dx) * 0.5, 180));
-    const c1x = a.x + a.dir * k;
-    const c2x = b.x + b.dir * k;
-    return `M ${a.x} ${a.y} C ${c1x} ${a.y}, ${c2x} ${b.y}, ${b.x} ${b.y}`;
+  if(style === 'straight'){
+    const ax = a.x + a.dir * stub, bx = b.x + b.dir * stub;
+    return `M ${a.x} ${a.y} L ${ax} ${a.y} L ${bx} ${b.y} L ${b.x} ${b.y}`;
   }
 
-  // 绕行曲线：先沿端口法线出一段，再以较大半径的贝塞尔绕到目标侧。
-  // 相比直角折线更自然，且因为控制点落在节点带外，曲线不会穿入节点。
-  const ax = a.x + a.dir * stub;
-  const bx = b.x + b.dir * stub;
-  const topBound = Math.min(a.box.t, b.box.t);
-  const bottomBound = Math.max(a.box.b, b.box.b);
-  const upY = topBound - 24;
-  const downY = bottomBound + 24;
-  const upCost = Math.abs(a.y - upY) + Math.abs(b.y - upY);
-  const downCost = Math.abs(a.y - downY) + Math.abs(b.y - downY);
-  const midY = upCost <= downCost ? upY : downY;
+  if(style === 'step' || style === 'smoothstep'){
+    // 正交：先沿法线出一段，再在两端之间的中点竖切，最后进入端口。
+    // 中点取 ax 与 bx 的中间，保证两段水平长度相近，视觉更平衡。
+    const ax = a.x + a.dir * stub;
+    const bx = b.x + b.dir * stub;
+    const midX = (ax + bx) / 2;
 
-  const c1x = ax + a.dir * Math.max(18, Math.abs(bx - ax) * 0.25);
-  const c2x = bx + b.dir * Math.max(18, Math.abs(bx - ax) * 0.25);
-  return `M ${a.x} ${a.y} C ${ax} ${a.y}, ${c1x} ${midY}, ${(c1x + c2x) / 2} ${midY} ` +
-         `C ${c2x} ${midY}, ${bx} ${b.y}, ${b.x} ${b.y}`;
+    if(style === 'step'){
+      if(Math.abs(a.y - b.y) < 0.5){
+        // 同高时退化为直线，避免无意义的折角
+        return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+      }
+      return `M ${a.x} ${a.y} L ${ax} ${a.y} L ${midX} ${a.y} ` +
+             `L ${midX} ${b.y} L ${bx} ${b.y} L ${b.x} ${b.y}`;
+    }
+
+    // smoothstep：起点段 → 圆角 → 竖直段 → 圆角 → 终点段
+    if(Math.abs(a.y - b.y) < 0.5){
+      return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+    }
+    const r = Math.min(12, Math.abs(midX - ax), Math.abs(bx - midX), Math.abs(b.y - a.y) / 2);
+    const sx = Math.sign(midX - ax) || 1;
+    const sy = Math.sign(b.y - a.y) || 1;
+    return [
+      `M ${a.x} ${a.y}`,
+      `L ${midX - sx * r} ${a.y}`,
+      `Q ${midX} ${a.y}, ${midX} ${a.y + sy * r}`,
+      `L ${midX} ${b.y - sy * r}`,
+      `Q ${midX} ${b.y}, ${midX + sx * r} ${b.y}`,
+      `L ${b.x} ${b.y}`
+    ].join(' ');
+  }
+
+  // bezier（默认）
+  const c1x = a.x + a.dir * k;
+  const c2x = b.x + b.dir * k;
+  return `M ${a.x} ${a.y} C ${c1x} ${a.y}, ${c2x} ${b.y}, ${b.x} ${b.y}`;
 }
 
 function portCenter(nodeId, portId){
@@ -475,7 +631,7 @@ function drawWires(){
   for(const e of state.edges){
     const a = portAnchor(e.from, e.fromPort), b = portAnchor(e.to, e.toPort);
     if(!a || !b) continue;
-    const d = linkPath(a, b);
+    const d = linkPath(a, b, state.edgeStyle);
     html += `<path d="${d}" stroke="url(#g)" stroke-width="2" fill="none" opacity=".9"
               marker-end="url(#arrow)" style="pointer-events:none"/>`;
     // 热区单独画到上层 svg（见 drawWires 末尾），此处不再输出到可见层
@@ -485,7 +641,7 @@ function drawWires(){
   for(const e of state.edges){
     const a = portAnchor(e.from, e.fromPort), b = portAnchor(e.to, e.toPort);
     if(!a || !b) continue;
-    const d = linkPath(a, b);
+    const d = linkPath(a, b, state.edgeStyle);
     hits += `<path d="${d}" stroke="transparent" stroke-width="12" fill="none"
                style="cursor:pointer" data-edge="${esc(e.id)}"/>`;
   }
@@ -504,21 +660,48 @@ function drawWires(){
   wires.innerHTML = html;
 }
 
-wrap.addEventListener('pointerdown', ev => {
-  // 点到空白（非节点、非端口、非抽屉、非连线热区）：取消选择。
-  // 必须排除连线热区：否则这里 renderNodes() 会销毁正在被点击的 path，
-  // 导致后续 mousedown 目标错位、浏览器不再合成 click，表现为"删不掉连线"。
-  if(ev.target.closest('.node') || ev.target.closest('.port') ||
-     ev.target.closest('.drawer') || ev.target.closest('#wirehits')) return;
-  if(state.linking){
-    state.linking = null;
-    clearHighlight();
-    drawWires();
-    return;
+/** 开始画布平移（由 canvas 的空白处按下触发）。 */
+function beginPan(ev){
+  state.panning = {
+    startX: ev.clientX, startY: ev.clientY,
+    v0: { x: state.view.x, y: state.view.y },
+    moved: false
+  };
+}
+
+world.addEventListener('pointermove', ev => {
+  const p = state.panning;
+  if(!p) return;
+  const dx = ev.clientX - p.startX, dy = ev.clientY - p.startY;
+  if(!p.moved && Math.hypot(dx, dy) > 3){
+    p.moved = true;
+    wrap.style.cursor = 'grabbing';
   }
-  state.selected = null;
-  renderNodes(); renderProps();
+  if(p.moved){
+    state.view.x = p.v0.x + dx;
+    state.view.y = p.v0.y + dy;
+    applyView();
+  }
 });
+
+world.addEventListener('pointerup', ev => {
+  const p = state.panning;
+  state.panning = null;
+  wrap.style.cursor = 'grab';
+  if(!p) return;
+  if(!p.moved){
+    state.selected = null;
+    renderNodes(); renderProps();
+  }
+});
+
+// 滚轮缩放：以光标为锚点
+wrap.addEventListener('wheel', ev => {
+  if(ev.target.closest('.drawer')) return;
+  ev.preventDefault();
+  const factor = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+  zoomAt(ev.clientX, ev.clientY, factor);
+}, { passive: false });
 
 wrap.addEventListener('dragover', ev => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; });
 wrap.addEventListener('drop', ev => {
@@ -586,6 +769,21 @@ function duplicateNode(id){
 
 /* 拖动 / 选中 / 连线 */
 let drag = null;
+
+world.addEventListener('pointerdown', ev => {
+  // 空白处按下：开始平移画布（节点与端口的事件由 canvas 处理，不在此处理）
+  if(ev.target.closest('.node') || ev.target.closest('.port')) return;
+  if(state.linking){
+    state.linking = null;
+    clearHighlight();
+    drawWires();
+    return;
+  }
+  state.selected = null;
+  renderProps();
+  canvas.querySelectorAll('.node').forEach(n => n.classList.remove('sel'));
+  beginPan(ev);
+});
 
 canvas.addEventListener('pointerdown', ev => {
   const portEl = ev.target.closest('.port');
@@ -840,7 +1038,15 @@ function renderProps(){
         <b>${esc(p.dataType)}${p.required?' *':''}</b></div>`).join('')}
     </div>
     ${routeInfo}
-    <div class="field"><label>显示名</label><input id="p-label" value="${esc(n.label)}"></div>`;
+    <div class="field"><label>显示名</label><input id="p-label" value="${esc(n.label)}"></div>
+    <div class="field"><label>节点颜色</label>
+      <div class="color-row">
+        ${NODE_COLORS.map(c => `<button class="swatch${(n.color||'')===c.v?' on':''}"
+            data-color="${c.v}" title="${c.n}" style="--sw:${c.v||'transparent'}"></button>`).join('')}
+        <input type="color" id="p-color" value="${esc(n.color || colorOf(n.nodeType))}" title="自定义颜色">
+      </div>
+      <div class="hint">用于视觉归类，不影响语义与校验</div>
+    </div>`;
 
   for(const f of (t?t.fields:[])){
     // 值缺失时回落到字段声明的默认值，避免属性面板出现空输入框
@@ -943,6 +1149,20 @@ function renderProps(){
     };
   }
 
+  // 节点配色
+  document.querySelectorAll('.swatch').forEach(btn => {
+    btn.onclick = () => {
+      n.color = btn.dataset.color || null;
+      renderNodes(); renderProps();
+      setMsg(n.color ? '已设置节点颜色' : '已恢复默认颜色');
+    };
+  });
+  const colorInput = $('p-color');
+  if(colorInput) colorInput.onchange = () => {
+    n.color = colorInput.value;
+    renderNodes(); renderProps();
+  };
+
   const flip = $('p-flip');
   if(flip) flip.onclick = () => {
     n.flipped = !n.flipped;
@@ -969,7 +1189,7 @@ function buildGraph(){
     revision: state.status ? state.status.revision : 0,
     nodes: state.nodes.map(n => ({
       id: n.id, nodeType: n.nodeType, label: n.label, x: n.x, y: n.y,
-      flipped: !!n.flipped, settings: n.settings
+      flipped: !!n.flipped, color: n.color || null, settings: n.settings
     })),
     edges: state.edges.map(e => ({
       id: e.id, from: e.from, fromPort: e.fromPort, to: e.to, toPort: e.toPort
@@ -981,6 +1201,17 @@ function applyIssues(issues){
   state.errIds = new Set((issues||[]).filter(i => i && i.nodeId).map(i => i.nodeId));
   renderNodes();
 }
+
+if($('zoomIn')) $('zoomIn').onclick = () => { const r = wrap.getBoundingClientRect(); zoomAt(r.left + r.width/2, r.top + r.height/2, 1.2); };
+if($('zoomOut')) $('zoomOut').onclick = () => { const r = wrap.getBoundingClientRect(); zoomAt(r.left + r.width/2, r.top + r.height/2, 1/1.2); };
+if($('zoomFit')) $('zoomFit').onclick = () => { fitView(); setMsg('已适应画布'); };
+if($('zoomReset')) $('zoomReset').onclick = () => { state.view = {x:0,y:0,zoom:1}; applyView(); drawWires(); setMsg('视图已重置'); };
+
+if($('edgeStyle')) $('edgeStyle').onchange = e => {
+  state.edgeStyle = e.target.value;
+  drawWires();
+  setMsg('连线样式：' + e.target.selectedOptions[0].textContent);
+};
 
 $('btnValidate').onclick = async () => {
   try{
@@ -1098,8 +1329,10 @@ async function loadInitial(){
   const sNode = mk('server', '服务端', 40, 330);
   const dec2 = mk('decoder', '解码器2', 300, 330);
   const sink = mk('sink', '出口', 560, 330);
+  // 占位节点：仅用于撑开走线空间，不被编译、不参与数据流
+  const ph = mk('placeholder', '占位', 850, 330);
 
-  state.nodes = [c, dec, h, enc, sNode, dec2, sink];
+  state.nodes = [c, dec, h, enc, sNode, dec2, sink, ph];
   state.edges = [
     // 上行：设备原始帧 → 解码器 → 处理器
     { id: uid('e'), from: c.id, fromPort:'out', to: dec.id, toPort:'in' },
