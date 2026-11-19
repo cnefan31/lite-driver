@@ -31,6 +31,15 @@ public sealed class DeviceDescriptor
 
     /// <summary>设备种类私有参数。由该种类按固定键校验，不是任意对象图。</summary>
     public JsonElement? KindSettings { get; init; }
+
+    /// <summary>
+    /// 载荷编解码器键（可选）。必须已在
+    /// <see cref="LiteDriverBuilder.RegisterCodec"/> 注册；为空表示直接把帧载荷交给业务层。
+    /// </summary>
+    public string? CodecId { get; init; }
+
+    /// <summary>编解码器私有参数，由该 codec 按固定键校验。</summary>
+    public JsonElement? CodecSettings { get; init; }
 }
 
 /// <summary>拨号端点。</summary>
@@ -114,6 +123,12 @@ public sealed class ListenerDescriptor
     public HeartbeatOptions Heartbeat { get; init; } = new();
 
     public JsonElement? KindSettings { get; init; }
+
+    /// <summary>载荷编解码器键（可选），语义同 <see cref="DeviceDescriptor.CodecId"/>。</summary>
+    public string? CodecId { get; init; }
+
+    /// <summary>编解码器私有参数。</summary>
+    public JsonElement? CodecSettings { get; init; }
 }
 
 /// <summary>源码生成上下文：核心唯一允许的 JSON 入口。反射式重载在 AOT 下被禁用。</summary>

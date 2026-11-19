@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using LiteDriver.Protocol;
 using LiteDriver.Sessions;
 
 namespace LiteDriver;
@@ -12,6 +13,13 @@ public sealed class PushFrame : IDisposable
 
     /// <summary>帧载荷（含该协议的帧头，由协议栈定义）。</summary>
     public ReadOnlyMemory<byte> Payload => _inner.Memory;
+
+    /// <summary>
+    /// 经配置的 <c>codecId</c> 解码后的业务消息。
+    /// 未配置编解码器时为默认值（<see cref="PayloadMessage.HasValue"/> 为 false），
+    /// 此时业务层应改用 <see cref="Payload"/> 自行解析。
+    /// </summary>
+    public PayloadMessage Message => _inner.Message;
 
     public void Dispose() => _inner.Dispose();
 }

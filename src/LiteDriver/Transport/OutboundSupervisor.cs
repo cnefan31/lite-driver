@@ -100,6 +100,7 @@ internal sealed class OutboundSupervisor : IAsyncDisposable
 {
     private readonly FrozenDevice _config;
     private readonly KindRegistry _kinds;
+    private readonly Protocol.PayloadCodecRegistry _codecs;
     private readonly DriverLimits _limits;
     private readonly ITransportFactory _transport;
     private readonly IEndpointResolver _resolver;
@@ -121,6 +122,7 @@ internal sealed class OutboundSupervisor : IAsyncDisposable
         FrozenDevice config,
         long generation,
         KindRegistry kinds,
+        Protocol.PayloadCodecRegistry codecs,
         DriverLimits limits,
         ITransportFactory transport,
         IEndpointResolver resolver,
@@ -132,6 +134,7 @@ internal sealed class OutboundSupervisor : IAsyncDisposable
         _config = config;
         _generation = generation;
         _kinds = kinds;
+        _codecs = codecs;
         _limits = limits;
         _transport = transport;
         _resolver = resolver;
@@ -305,6 +308,23 @@ internal sealed class OutboundSupervisor : IAsyncDisposable
             return false;
         }
 
+        // 按配置的 codecId 创建载荷编解码器（未配置则为 null，业务层直接拿裸帧）。
+        Protocol.IPayloadCodec? codec = null;
+        if (!string.IsNullOrEmpty(_config.CodecId))
+        {
+            var codecContext = new Protocol.PayloadCodecContext(
+                _config.CodecId!,
+                _config.DeviceId,
+                ConnectionDirection.Outbound,
+                _limits,
+                _config.CodecSettings);
+            codec = _codecs.Create(_config.CodecId!, codecContext);
+            if (codec is null)
+            {
+                Emit(DriverEventKind.ProtocolFault, "codec-unresolved:" + _config.CodecId, 0);
+            }
+        }
+
         var ctx = new ConnectionContext(
             connectionId,
             epoch,
@@ -315,7 +335,8 @@ internal sealed class OutboundSupervisor : IAsyncDisposable
             _config.DeviceId,
             null,
             ConnectionDirection.Outbound,
-            _config.KindId);
+            _config.KindId,
+            codec);
 
         var runner = new SessionRunner(
             ctx,

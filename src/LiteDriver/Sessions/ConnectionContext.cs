@@ -42,7 +42,8 @@ internal sealed class ConnectionContext
         string? deviceId,
         string? listenerId,
         ConnectionDirection direction,
-        string kindId)
+        string kindId,
+        Protocol.IPayloadCodec? codec = null)
     {
         ConnectionId = id;
         Epoch = epoch;
@@ -54,6 +55,7 @@ internal sealed class ConnectionContext
         ListenerId = listenerId;
         Direction = direction;
         KindId = kindId;
+        Codec = codec;
         OpenedAtTicks = time.GetUtcNow().UtcTicks;
         _lastInboundTicks = OpenedAtTicks;
 
@@ -94,6 +96,12 @@ internal sealed class ConnectionContext
     public ConnectionDirection Direction { get; }
 
     public string KindId { get; }
+
+    /// <summary>
+    /// 载荷编解码器（可空）。不为空时，分帧完成后的每一帧都会先经它解码成业务消息，
+    /// 再进入握手/心跳/响应/推送分流。
+    /// </summary>
+    public Protocol.IPayloadCodec? Codec { get; }
 
     public long OpenedAtTicks { get; }
 
@@ -202,14 +210,18 @@ internal sealed class InboundFrame : IDisposable
     private readonly int _length;
     private readonly bool _pooled;
 
-    internal InboundFrame(byte[] buffer, int length, bool pooled)
+    internal InboundFrame(byte[] buffer, int length, bool pooled, Protocol.PayloadMessage message = default)
     {
         _rented = buffer;
         _length = length;
         _pooled = pooled;
+        Message = message;
     }
 
     public ReadOnlyMemory<byte> Memory => _rented is null ? ReadOnlyMemory<byte>.Empty : _rented.AsMemory(0, _length);
+
+    /// <summary>经 codec 解码后的业务消息；未配置 codec 时为默认值。</summary>
+    public Protocol.PayloadMessage Message { get; }
 
     public void Dispose()
     {

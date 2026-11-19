@@ -5,6 +5,9 @@ namespace LiteDriver.Configuration;
 /// <summary>按 kindId 校验该种类的私有参数。返回 <c>null</c> 表示通过。</summary>
 internal delegate string? KindValidator(string kindId, ReadOnlyMemory<byte> settings);
 
+/// <summary>按 codecId 校验编解码器的私有参数。返回 <c>null</c> 表示通过。</summary>
+internal delegate string? CodecValidator(string codecId, ReadOnlyMemory<byte> settings);
+
 /// <summary>冻结后的设备配置。所有集合只读，进入内核后不再变化。</summary>
 internal sealed record FrozenDevice(
     string DeviceId,
@@ -13,7 +16,9 @@ internal sealed record FrozenDevice(
     FrozenRetry Retry,
     FrozenHeartbeat Heartbeat,
     FrozenHandshake Handshake,
-    JsonElement? KindSettings)
+    JsonElement? KindSettings,
+    string? CodecId,
+    JsonElement? CodecSettings)
 {
     public string BindingKey { get; } = DeviceId + "\u0000" + KindId + "\u0000" +
         string.Join("\u0001", Array.ConvertAll(Endpoints, static e => e.Host + ":" + e.Port));
@@ -55,7 +60,9 @@ internal sealed record FrozenListener(
     int MaxSessions,
     FrozenHandshake Handshake,
     FrozenHeartbeat Heartbeat,
-    JsonElement? KindSettings);
+    JsonElement? KindSettings,
+    string? CodecId,
+    JsonElement? CodecSettings);
 
 /// <summary>
 /// 一次配置校验的全部结果。<see cref="Devices"/> 与 <see cref="Listeners"/> 只在 <see cref="Issues"/> 为空时可用。
@@ -105,7 +112,9 @@ internal sealed class FrozenConfig
         long revision,
         IReadOnlyCollection<string> knownKinds,
         DriverLimits limits,
-        KindValidator kindValidator)
+        KindValidator kindValidator,
+        IReadOnlyCollection<string>? knownCodecs = null,
+        CodecValidator? codecValidator = null)
     {
         var issues = new List<ApplyIssue>();
         var devices = new List<FrozenDevice>(source.Devices.Length);
@@ -208,8 +217,30 @@ internal sealed class FrozenConfig
                 continue;
             }
 
+            // 载荷编解码器（可选）：键必须已注册，参数交给 codec 自己校验。
+            var codec = (d.CodecId ?? "").Trim();
+            if (codec.Length > 0)
+            {
+                if (knownCodecs is null || !knownCodecs.Contains(codec))
+                {
+                    issues.Add(new ApplyIssue(
+                        "codec_unknown", $"设备 '{id}' 的 CodecId '{codec}' 未注册", id));
+                    continue;
+                }
+
+                var codecError = codecValidator?.Invoke(codec, SerializeElement(d.CodecSettings));
+                if (codecError is not null)
+                {
+                    issues.Add(new ApplyIssue(
+                        "codec_settings_invalid",
+                        $"设备 '{id}' 的 CodecSettings 非法：{codecError}", id));
+                    continue;
+                }
+            }
+
             var frozen = new FrozenDevice(
-                id, kind, [.. endpoints], retry, heartbeat, handshake, CloneElement(d.KindSettings));
+                id, kind, [.. endpoints], retry, heartbeat, handshake, CloneElement(d.KindSettings),
+                codec.Length == 0 ? null : codec, CloneElement(d.CodecSettings));
             devices.Add(frozen);
             deviceMap[id] = frozen;
         }
@@ -300,8 +331,29 @@ internal sealed class FrozenConfig
                 continue;
             }
 
+            var listenerCodec = (l.CodecId ?? "").Trim();
+            if (listenerCodec.Length > 0)
+            {
+                if (knownCodecs is null || !knownCodecs.Contains(listenerCodec))
+                {
+                    issues.Add(new ApplyIssue(
+                        "codec_unknown", $"监听端点 '{id}' 的 CodecId '{listenerCodec}' 未注册", id));
+                    continue;
+                }
+
+                var codecError2 = codecValidator?.Invoke(listenerCodec, SerializeElement(l.CodecSettings));
+                if (codecError2 is not null)
+                {
+                    issues.Add(new ApplyIssue(
+                        "codec_settings_invalid",
+                        $"监听端点 '{id}' 的 CodecSettings 非法：{codecError2}", id));
+                    continue;
+                }
+            }
+
             var frozen = new FrozenListener(
-                id, kind, host, l.Port, l.Backlog, l.MaxSessions, handshake, heartbeat, CloneElement(l.KindSettings));
+                id, kind, host, l.Port, l.Backlog, l.MaxSessions, handshake, heartbeat, CloneElement(l.KindSettings),
+                listenerCodec.Length == 0 ? null : listenerCodec, CloneElement(l.CodecSettings));
             listeners.Add(frozen);
             listenerMap[id] = frozen;
         }
@@ -399,6 +451,12 @@ internal sealed class FrozenConfig
 
         return new FrozenHandshake(TimeSpan.FromMilliseconds(o.TimeoutMs));
     }
+
+    /// <summary>把可空 JsonElement 序列化为字节，供校验器使用。</summary>
+    private static ReadOnlyMemory<byte> SerializeElement(JsonElement? element) =>
+        element is { } e && e.ValueKind != JsonValueKind.Undefined
+            ? JsonSerializer.SerializeToUtf8Bytes(e, LiteDriverJsonContext.Default.JsonElement)
+            : ReadOnlyMemory<byte>.Empty;
 
     /// <summary>克隆 JsonElement，避免调用方持有原文档后修改或释放。</summary>
     private static JsonElement? CloneElement(JsonElement? source)

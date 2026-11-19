@@ -135,7 +135,8 @@ public sealed class CommandResult : IDisposable
         int length,
         string? errorCode,
         ConnectionId connectionId,
-        long epoch)
+        long epoch,
+        Protocol.PayloadMessage message = default)
     {
         Disposition = disposition;
         _rented = rented;
@@ -143,6 +144,7 @@ public sealed class CommandResult : IDisposable
         ErrorCode = errorCode;
         ConnectionId = connectionId;
         Epoch = epoch;
+        Message = message;
     }
 
     public CommandDisposition Disposition { get; }
@@ -155,6 +157,12 @@ public sealed class CommandResult : IDisposable
 
     /// <summary>响应载荷长度；无响应时为 0。</summary>
     public int Length { get; }
+
+    /// <summary>
+    /// 经配置的 <c>codecId</c> 解码后的业务消息。
+    /// 未配置编解码器、或该帧不解码成消息时为默认值（<see cref="Protocol.PayloadMessage.HasValue"/> 为 false）。
+    /// </summary>
+    public Protocol.PayloadMessage Message { get; }
 
     /// <summary>响应载荷。仅在 <see cref="Dispose"/> 之前有效。</summary>
     public ReadOnlyMemory<byte> Response =>

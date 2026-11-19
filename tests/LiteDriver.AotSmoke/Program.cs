@@ -26,6 +26,7 @@ public static class Program
         await CheckDynamicMutationsAsync();
         await CheckPortConflictRollbackAsync();
         await CheckNotReadyCommandAsync();
+        await CheckPayloadCodecAsync();
 
         Console.WriteLine(_failures == 0 ? "ALL CHECKS PASSED" : $"{_failures} CHECK(S) FAILED");
         return _failures == 0 ? 0 : 1;
@@ -201,6 +202,64 @@ public static class Program
         return port;
     }
 
+    /// <summary>
+    /// 载荷编解码器在 AOT 下最关键的一项：配置里只写 codecId 字符串，
+    /// 由启动期静态注册的工厂解析。这条路径若依赖反射或动态类型加载，AOT 下必失败。
+    /// </summary>
+    private static async Task CheckPayloadCodecAsync()
+    {
+        await using var fake = new SmokeDevice();
+        fake.Start();
+
+        await using var driver = new LiteDriverBuilder()
+            .RegisterKind("smoke", static ctx => new SmokeKind(ctx))
+            // 静态工厂：codecId → 已编译类型，AOT 可静态分析
+            .RegisterCodec("upper", static ctx => new UpperCodec(ctx))
+            .Build();
+
+        var start = await driver.StartAsync(new DriverConfig
+        {
+            Devices =
+            [
+                new DeviceDescriptor
+                {
+                    DeviceId = "codec-dev",
+                    KindId = "smoke",
+                    Endpoints = [new EndpointDescriptor { Host = "127.0.0.1", Port = fake.Port }],
+                    Retry = new RetryOptions { InitialMs = 50, MaxMs = 500, Jitter = 0, ConnectTimeoutMs = 2000 },
+                    // 仅给字符串键，不涉及类型名
+                    CodecId = "upper"
+                }
+            ]
+        });
+
+        Expect(start.Succeeded, "配置 codecId 后启动成功");
+
+        await driver.WaitUntilReadyAsync("codec-dev", TimeSpan.FromSeconds(10));
+        using var result = await driver.GetDevice("codec-dev").ExchangeAsync("PING"u8.ToArray(), TimeSpan.FromSeconds(5));
+
+        Expect(result.Disposition == CommandDisposition.Executed, "带 codec 的交换返回 Executed");
+        Expect(result.Message.HasValue, "响应被 codec 解码成业务消息");
+        Expect(result.Message.As<UpperMessage>().Text == "PONG", "解码结果符合 codec 约定");
+
+        // 未注册的 codecId 必须在配置校验阶段被拒，而不是运行时静默降级
+        var bad = await driver.ApplyAsync(new DriverConfig
+        {
+            Devices =
+            [
+                new DeviceDescriptor
+                {
+                    DeviceId = "codec-dev",
+                    KindId = "smoke",
+                    Endpoints = [new EndpointDescriptor { Host = "127.0.0.1", Port = fake.Port }],
+                    CodecId = "not-registered"
+                }
+            ]
+        });
+        Expect(!bad.Succeeded && bad.Issues.Any(i => i.Code == "codec_unknown"),
+            "未注册的 codecId 在配置校验阶段被拒");
+    }
+
     private static void Expect(bool condition, string what)
     {
         if (condition)
@@ -354,3 +413,28 @@ internal sealed class SmokeDevice : IAsyncDisposable
         _cts.Dispose();
     }
 }
+
+/// <summary>smoke 用编解码器：把字节按 UTF-8 转成 <see cref="UpperMessage"/>。</summary>
+internal sealed class UpperCodec : IPayloadCodec
+{
+    public UpperCodec(PayloadCodecContext ctx) => _ = ctx;
+
+    public string CodecId => "upper";
+
+    public PayloadMessage Decode(ReadOnlySpan<byte> frame)
+    {
+        // 帧含 2 字节长度前缀，业务载荷从第 3 字节开始。
+        var payload = frame.Length > 2 ? frame[2..] : default;
+        return PayloadMessage.From(new UpperMessage(Encoding.ASCII.GetString(payload)));
+    }
+
+    public void Encode(PayloadMessage message, System.Buffers.IBufferWriter<byte> writer)
+    {
+        var bytes = Encoding.ASCII.GetBytes(message.As<UpperMessage>().Text);
+        bytes.CopyTo(writer.GetSpan(bytes.Length));
+        writer.Advance(bytes.Length);
+    }
+}
+
+/// <summary>smoke 业务消息。</summary>
+internal sealed record UpperMessage(string Text);

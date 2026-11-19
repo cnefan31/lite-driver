@@ -237,9 +237,40 @@ internal sealed class SessionRunner
         }
     }
 
+    /// <summary>
+    /// 分帧完成后的入口：先按配置的编解码器把帧转成业务消息，
+    /// 再交给握手/心跳/响应/推送分流。
+    /// <para>
+    /// 握手与心跳仍然按<b>原始帧</b>判定：它们在协议语义上早于业务载荷，
+    /// 让 codec 去理解握手帧会把协议耦合进业务层。
+    /// </para>
+    /// </summary>
     private bool Dispatch(ReadOnlySpan<byte> frame, out string? detail)
     {
         detail = null;
+
+        // 载荷载荷解码：仅在业务阶段进行（握手完成后）。
+        // 解码失败视为协议错误，拆链，不吞掉。
+        PayloadMessage message = default;
+        if (_handshakeDone && _ctx.Codec is not null)
+        {
+            try
+            {
+                message = _ctx.Codec.Decode(frame);
+            }
+            catch (PayloadDecodeException ex)
+            {
+                detail = "payload-decode: " + ex.Message;
+                Emit(DriverEventKind.ProtocolFault, detail, frame.Length);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                detail = "payload-codec-crash: " + ex.GetType().Name;
+                Emit(DriverEventKind.ProtocolFault, detail, frame.Length);
+                return false;
+            }
+        }
 
         if (!_handshakeDone)
         {
@@ -285,7 +316,7 @@ internal sealed class SessionRunner
                     ? CommandDisposition.Executed
                     : CommandDisposition.Rejected;
                 pending.Completion.TrySetResult(new CommandResult(
-                    disposition, copy, frame.Length, null, _ctx.ConnectionId, _ctx.Epoch));
+                    disposition, copy, frame.Length, null, _ctx.ConnectionId, _ctx.Epoch, message));
                 return true;
             }
 
@@ -294,7 +325,7 @@ internal sealed class SessionRunner
 
         var rented = ArrayPool<byte>.Shared.Rent(frame.Length);
         frame.CopyTo(rented);
-        var item = new InboundFrame(rented, frame.Length, pooled: true);
+        var item = new InboundFrame(rented, frame.Length, pooled: true, message);
         if (!_pushQueue.Writer.TryWrite(item))
         {
             item.Dispose();

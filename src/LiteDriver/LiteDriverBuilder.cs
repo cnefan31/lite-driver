@@ -11,6 +11,7 @@ namespace LiteDriver;
 public sealed class LiteDriverBuilder
 {
     private readonly KindRegistry _kinds = new();
+    private readonly Protocol.PayloadCodecRegistry _codecs = new();
     private DriverLimits _limits = new();
     private ITransportFactory _transport = SocketTransportFactory.Instance;
     private IEndpointResolver _resolver = SystemEndpointResolver.Instance;
@@ -36,6 +37,20 @@ public sealed class LiteDriverBuilder
     {
         ArgumentNullException.ThrowIfNull(settingsValidator);
         _kinds.Register(kindId, factory, settingsValidator);
+        return this;
+    }
+
+    /// <summary>
+    /// 注册载荷编解码器。<paramref name="codecId"/> 是配置 <c>codecId</c> 字段的稳定键，
+    /// <b>不是 CLR 类型名</b>。工厂须静态可分析（推荐 <c>static ctx =&gt; new XxxCodec(ctx)</c>），
+    /// 这是 NativeAOT 下「配置驱动选择编解码器」唯一可行且不打折的形态。
+    /// </summary>
+    public LiteDriverBuilder RegisterCodec(
+        string codecId,
+        Func<PayloadCodecContext, IPayloadCodec> factory,
+        PayloadCodecSettingsValidator? settingsValidator = null)
+    {
+        _codecs.Register(codecId, factory, settingsValidator);
         return this;
     }
 
@@ -94,7 +109,8 @@ public sealed class LiteDriverBuilder
     {
         ArgumentNullException.ThrowIfNull(observer);
         _kinds.Freeze();
+        _codecs.Freeze();
         var limits = _limits.ValidateAndFreeze();
-        return new LiteDriver(_kinds, limits, _transport, _resolver, _chaos, _time, observer);
+        return new LiteDriver(_kinds, _codecs, limits, _transport, _resolver, _chaos, _time, observer);
     }
 }

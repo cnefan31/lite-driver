@@ -13,6 +13,7 @@ namespace LiteDriver;
 public sealed class LiteDriver : IAsyncDisposable, IDisposable
 {
     private readonly KindRegistry _kinds;
+    private readonly Protocol.PayloadCodecRegistry _codecs;
     private readonly DriverLimits _limits;
     private readonly ITransportFactory _transport;
     private readonly IEndpointResolver _resolver;
@@ -30,6 +31,7 @@ public sealed class LiteDriver : IAsyncDisposable, IDisposable
 
     internal LiteDriver(
         KindRegistry kinds,
+        Protocol.PayloadCodecRegistry codecs,
         DriverLimits limits,
         ITransportFactory transport,
         IEndpointResolver resolver,
@@ -38,6 +40,7 @@ public sealed class LiteDriver : IAsyncDisposable, IDisposable
         IDriverObserver observer)
     {
         _kinds = kinds;
+        _codecs = codecs;
         _limits = limits;
         _transport = transport;
         _resolver = resolver;
@@ -54,6 +57,9 @@ public sealed class LiteDriver : IAsyncDisposable, IDisposable
 
     /// <summary>已冻结的资源上限。</summary>
     public DriverLimits Limits => _limits;
+
+    /// <summary>已冻结的编解码器注册表，供监督器按 codecId 创建实例。</summary>
+    internal Protocol.PayloadCodecRegistry Codecs => _codecs;
 
     public TimeProvider TimeProvider => _time;
 
@@ -121,7 +127,9 @@ public sealed class LiteDriver : IAsyncDisposable, IDisposable
                 Revision + 1,
                 _kinds.Keys,
                 _limits,
-                _kinds.ValidateSettings);
+                _kinds.ValidateSettings,
+                _codecs.Keys,
+                _codecs.ValidateSettings);
 
             if (!next.IsValid)
             {
@@ -154,6 +162,7 @@ public sealed class LiteDriver : IAsyncDisposable, IDisposable
                         listener,
                         nextGeneration,
                         _kinds,
+                        _codecs,
                         _limits,
                         _chaos,
                         _time,
@@ -177,6 +186,7 @@ public sealed class LiteDriver : IAsyncDisposable, IDisposable
                         device,
                         nextGeneration,
                         _kinds,
+                        _codecs,
                         _limits,
                         _transport,
                         _resolver,

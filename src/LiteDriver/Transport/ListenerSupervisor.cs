@@ -17,6 +17,7 @@ internal sealed class ListenerSupervisor : IAsyncDisposable
 
     private readonly FrozenListener _config;
     private readonly KindRegistry _kinds;
+    private readonly Protocol.PayloadCodecRegistry _codecs;
     private readonly DriverLimits _limits;
     private readonly IChaosPolicy _chaos;
     private readonly TimeProvider _time;
@@ -36,6 +37,7 @@ internal sealed class ListenerSupervisor : IAsyncDisposable
         FrozenListener config,
         long generation,
         KindRegistry kinds,
+        Protocol.PayloadCodecRegistry codecs,
         DriverLimits limits,
         IChaosPolicy chaos,
         TimeProvider time,
@@ -45,6 +47,7 @@ internal sealed class ListenerSupervisor : IAsyncDisposable
         _config = config;
         _generation = generation;
         _kinds = kinds;
+        _codecs = codecs;
         _limits = limits;
         _chaos = chaos;
         _time = time;
@@ -185,6 +188,18 @@ internal sealed class ListenerSupervisor : IAsyncDisposable
             return;
         }
 
+        Protocol.IPayloadCodec? codec = null;
+        if (!string.IsNullOrEmpty(_config.CodecId))
+        {
+            var codecContext = new Protocol.PayloadCodecContext(
+                _config.CodecId!,
+                _config.ListenerId,
+                ConnectionDirection.Inbound,
+                _limits,
+                _config.CodecSettings);
+            codec = _codecs.Create(_config.CodecId!, codecContext);
+        }
+
         var ctx = new ConnectionContext(
             connectionId,
             epoch,
@@ -195,7 +210,8 @@ internal sealed class ListenerSupervisor : IAsyncDisposable
             null,
             _config.ListenerId,
             ConnectionDirection.Inbound,
-            _config.KindId);
+            _config.KindId,
+            codec);
 
         var runner = new SessionRunner(
             ctx,

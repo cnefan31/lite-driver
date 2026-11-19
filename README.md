@@ -138,6 +138,38 @@ public sealed class MyProtocol : ISessionProtocol
 
 内置四种分包器：`FixedLengthFrameDecoder`、`LengthPrefixFrameDecoder`、`TerminatorFrameDecoder`、`DelimitedFrameDecoder`，另有 `PassthroughFrameDecoder`。
 
+### 分帧之后：载荷编解码器
+
+分帧负责切出完整帧；**帧内载荷 → 业务消息**由 `IPayloadCodec` 负责，可插拔且在 AOT 下不打折。
+
+```csharp
+// 1) 启动期注册（工厂静态可分析）
+var driver = new LiteDriverBuilder()
+    .RegisterKind("my-protocol", static ctx => new MyKind(ctx))
+    .RegisterCodec("my-codec", static ctx => new MyCodec(ctx))
+    .Build();
+
+// 2) 配置里只写键名
+// { "deviceId": "d1", "kindId": "my-protocol", "codecId": "my-codec" }
+
+// 3) 取强类型消息
+using var result = await handle.ExchangeAsync(payload, timeout);
+if (result.Message.HasValue)
+{
+    var msg = result.Message.As<MyMessage>();
+}
+```
+
+| 要点 | 说明 |
+| --- | --- |
+| 分帧 vs 编解码 | 分帧器只切完整帧；codec 负责帧头剥离与语义解析 |
+| 顺序 | 分帧 → **codec 解码** → 握手/心跳/响应/推送分流 |
+| 握手与心跳 | 不经 codec，按原始帧判定，避免协议耦合进业务层 |
+| 解码失败 | 记 `ProtocolFault` 并拆链，不吞掉 |
+| 未配 codec | 行为不变，业务层直接拿裸 `ReadOnlyMemory<byte>` |
+
+> **AOT 前提**：`codecId` 是启动期注册表的键，**不是 CLR 类型名**。NativeAOT 禁止按名字加载类型，所以「配置驱动」只能表现为「配置填键 + 静态工厂」。未注册的 `codecId` 在配置校验阶段即被拒（`codec_unknown`）。
+
 ### 起始/结束标记协议
 
 若设备帧「以固定字节开始、以固定字节结束」，直接用 `DelimitedKind`，标记用十六进制配置，两种方式任选：

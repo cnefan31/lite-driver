@@ -156,6 +156,86 @@ public interface IDeviceKind
 
 对应编码器：`LengthPrefixFrameEncoder`、`TerminatorFrameEncoder`、`PassthroughFrameEncoder`、`DelimitedFrameEncoder`。
 
+### 载荷编解码器（IPayloadCodec）
+
+分帧只管切出完整帧。**帧内载荷如何翻译成业务消息**由 `IPayloadCodec` 负责。
+
+```csharp
+public interface IPayloadCodec
+{
+    string CodecId { get; }
+    PayloadMessage Decode(ReadOnlySpan<byte> frame);
+    void Encode(PayloadMessage message, IBufferWriter<byte> writer);
+}
+```
+
+**注册**（启动期，工厂须静态可分析）：
+
+```csharp
+var driver = new LiteDriverBuilder()
+    .RegisterKind("my-protocol", static ctx => new MyKind(ctx))
+    .RegisterCodec("my-codec", static ctx => new MyCodec(ctx))
+    .Build();
+```
+
+**配置**（只写键名，不写类型名）：
+
+```json
+{
+  "deviceId": "press-01",
+  "kindId": "my-protocol",
+  "codecId": "my-codec",
+  "codecSettings": { "stripPrefix": 2 }
+}
+```
+
+**取消息**：
+
+```csharp
+using var result = await handle.ExchangeAsync(payload, timeout);
+if (result.Message.HasValue)
+{
+    var msg = result.Message.As<MyMessage>();   // 类型不符抛 InvalidCastException
+}
+
+// 入站
+using var frame = await session.ReceiveAsync(ct);
+if (frame.Message.HasValue)
+{
+    var msg = frame.Message.As<MyMessage>();
+}
+```
+
+### PayloadMessage
+
+刻意**不是泛型**。`IPayloadCodec<TMessage>` 会在 AOT 下引入泛型实例化与虚分发问题，而配置驱动本身是运行期按字符串键选择。需要强类型的实现在自己的 codec 内部完成。
+
+| 成员 | 说明 |
+| --- | --- |
+| `MessageType` | 业务消息类型名，仅用于观测与路由判断 |
+| `HasValue` | 是否有实际消息对象 |
+| `As<T>()` | 取强类型消息，类型不符抛异常，不静默兜底 |
+| `PayloadMessage.From<T>(value)` | 构造消息（供 codec 使用） |
+| `PayloadMessage.Empty(type)` | 空消息：该帧不进业务层，但仍算解码成功 |
+
+### 解码失败的处理
+
+`Decode` 抛 `PayloadDecodeException` 或任意异常 → 记 `ProtocolFault` 事件 → **拆除当前链路**，不吞掉。
+
+握手帧与心跳帧**不经 codec**：它们在协议语义上早于业务载荷，让 codec 理解握手帧会把协议耦合进业务层。
+
+### AOT 前提
+
+「配置动态加载编解码器」在 NativeAOT 下的唯一可行形态是**配置里填注册表键**：
+
+| 允许 | 禁止 |
+| --- | --- |
+| `codecId` 字符串 → 启动期注册的工厂委托 | `Type.GetType("MyCodec")` |
+| 工厂 `static ctx => new MyCodec(ctx)` | `Activator.CreateInstance(Type)` |
+| | `Assembly.LoadFile` / `Reflection.Emit` |
+
+`codecId` 未注册会在**配置校验阶段**被拒（`codec_unknown`），不会拖到首次收包才失败。
+
 ### 起始/结束标记分帧（DelimitedFrameDecoder）
 
 适用于「每帧以固定字节开始、以固定字节结束」的协议，标记用十六进制配置。

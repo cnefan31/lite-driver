@@ -15,7 +15,7 @@
 
   <PropertyGroup>
     <PackageId>LiteDriver.Orchestration</PackageId>
-    <Version>0.1.3</Version>
+    <Version>0.2.0</Version>
     <Description>LiteDriver 的可视化功能编排库：基于 NanoServer 提供拖拽式编排页面，在线增删改客户端/服务端/协议节点，保存后热应用，无需重启后端服务。</Description>
     <PackageTags>tcp;socket;industrial;orchestration;visual;drag-drop;nano-server;aot;nativeaot</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
