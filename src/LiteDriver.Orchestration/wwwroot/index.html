@@ -525,7 +525,10 @@ function renderProps(){
     <div class="field"><label>显示名</label><input id="p-label" value="${esc(n.label)}"></div>`;
 
   for(const f of (t?t.fields:[])){
-    const v = n.settings[f.key] ?? '';
+    // 值缺失时回落到字段声明的默认值，避免属性面板出现空输入框
+    const v = (n.settings[f.key] !== undefined && n.settings[f.key] !== '')
+      ? n.settings[f.key]
+      : (f.defaultValue ?? '');
     if(f.kind === 'Bool'){
       html += `<div class="field"><label>${esc(f.label)}</label>
         <select id="p-${esc(f.key)}"><option value="false" ${v!=='true'?'selected':''}>关闭</option>
@@ -718,7 +721,7 @@ async function loadInitial(){
     { id: uid('e'), from: k1.id, fromPort:'out', to: h.id, toPort:'in' }
   ];
   renderNodes(); renderProps();
-  setMsg('已载入示例编排：客户端必须经编解码器才能到处理器');
+  setMsg('已载入示例：客户端 → 编解码器 → 处理器（端点需按实际设备地址修改后应用）');
 }
 
 (async () => {

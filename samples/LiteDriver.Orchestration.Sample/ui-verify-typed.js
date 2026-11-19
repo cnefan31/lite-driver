@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 
 const EDGE = '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge';
-const BASE = 'http://127.0.0.1:8111';
+const BASE = 'http://127.0.0.1:8110';
 const PORT = 9361;
 const PROFILE = '/tmp/orch2-edge-profile';
 const OUT = '/Users/cnefan31/development/lite-driver/designs/orchestration-typed.png';
@@ -27,7 +27,7 @@ async function waitForPage() {
   for (let i = 0; i < 80; i++) {
     try {
       const pages = await getJson('/json');
-      const pg = pages.find(p => p.type === 'page' && p.url.includes('8111'));
+      const pg = pages.find(p => p.type === 'page' && p.url.includes("8110"));
       if (pg) return pg;
     } catch (_) {}
     await sleep(250);
