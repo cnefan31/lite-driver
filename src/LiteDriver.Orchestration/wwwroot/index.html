@@ -126,6 +126,10 @@
   .port.compat .pdot{background:var(--ok);border-color:var(--ok);box-shadow:0 0 6px var(--ok)}
   .port.linked .pdot{background:var(--accent);border-color:var(--accent)}
   .port.incompat{opacity:.32;cursor:not-allowed}
+  /* 吸附锁定：端口放大 + 外发光，明确"松手就连这里" */
+  .port.snapped .pdot{transform:scale(1.55);background:var(--accent);
+    border-color:#fff;box-shadow:0 0 0 5px rgba(76,141,255,.28)}
+  .port.snapped .pio{background:var(--accent);color:#fff;border-color:var(--accent)}
 
   /* 翻转：输入与输出互换所在边框，内容对齐同步翻转 */
   .node.flipped .port.in{justify-content:flex-end;padding-left:10px;padding-right:14px}
@@ -179,6 +183,10 @@
   .port.linked .pdot{background:var(--accent);border-color:var(--accent)}
   .port.compat .pdot{background:var(--ok);border-color:var(--ok);box-shadow:0 0 6px var(--ok)}
   .port.incompat{opacity:.32;cursor:not-allowed}
+  /* 吸附锁定：端口放大 + 外发光，明确"松手就连这里" */
+  .port.snapped .pdot{transform:scale(1.55);background:var(--accent);
+    border-color:#fff;box-shadow:0 0 0 5px rgba(76,141,255,.28)}
+  .port.snapped .pio{background:var(--accent);color:#fff;border-color:var(--accent)}
 
   /* 属性面板 */
   .props{padding:0 13px 16px}
@@ -522,6 +530,41 @@ function markLinked(){
  * 锚点可能因翻转而位于节点左或右，曲线必须沿法线外推，
  * 否则两端同侧时控制点会把曲线拽进节点内部。
  */
+/** 吸附半径（屏幕像素）。指针进入该范围即锁定端口。 */
+const SNAP_PX = 34;
+
+/**
+ * 查找指针附近的兼容端口用于吸附。
+ * 只考虑与起拖方向相反、且类型兼容的端口，避免吸附到非法目标。
+ * @returns {{node:string, port:string, anchor:object}|null}
+ */
+function findSnapTarget(clientX, clientY){
+  const link = state.linking;
+  if(!link) return null;
+  const wantDir = link.fromDir === 'out' ? 'in' : 'out';
+
+  let best = null, bestDist = SNAP_PX;
+  for(const el of canvas.querySelectorAll(`.port[data-dir="${wantDir}"]`)){
+    if(el.dataset.node === link.from) continue;
+    // 类型兼容才可吸附
+    const t = el.dataset.type;
+    const compat = t === link.dataType || t === 'Any' || link.dataType === 'Any';
+    if(!compat) continue;
+
+    const dot = el.querySelector('.pdot');
+    if(!dot) continue;
+    const r = dot.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const dist = Math.hypot(clientX - cx, clientY - cy);
+    if(dist < bestDist){
+      bestDist = dist;
+      best = { node: el.dataset.node, port: el.dataset.port,
+               anchor: portAnchor(el.dataset.node, el.dataset.port) };
+    }
+  }
+  return best;
+}
+
 function portAnchor(nodeId, portId){
   const el = canvas.querySelector(`.port[data-node="${nodeId}"][data-port="${portId}"] .pdot`);
   if(!el) return null;
@@ -563,37 +606,35 @@ function portAnchor(nodeId, portId){
 function linkPath(a, b, style){
   const dx = b.x - a.x;
   const dy = b.y - a.y;
-  const k = Math.max(28, Math.min(Math.abs(dx) * 0.5, 180));
-  const stub = 16;
+
+  // 端口朝向与目标方向一致时，正常沿法线出入。
+  // 不一致（翻转后端口在背面）时，不再大幅绕行——只做一个很小的让位，
+  // 否则会产生又长又怪的曲线，这正是之前"线条丑陋"的原因。
+  // 起点出线方向：优先沿端口法线；若法线与目标方向相反则直接朝目标走。
+  const towards = Math.sign(dx) || 1;
+  const aOut = a.dir === towards ? a.dir : towards;
+  // 终点进入方向：虚拟/真实端口朝 b.dir，进入即沿该方向的反向靠近。
+  // 用 -(b.dir) 表示"从 b.dir 指向的那一侧靠近"，避免与 aOut 抵消成零长度。
+  const bIn = -b.dir;
 
   if(style === 'straight'){
-    const ax = a.x + a.dir * stub, bx = b.x + b.dir * stub;
-    return `M ${a.x} ${a.y} L ${ax} ${a.y} L ${bx} ${b.y} L ${b.x} ${b.y}`;
+    return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
   }
 
   if(style === 'step' || style === 'smoothstep'){
-    // 正交：先沿法线出一段，再在两端之间的中点竖切，最后进入端口。
-    // 中点取 ax 与 bx 的中间，保证两段水平长度相近，视觉更平衡。
-    const ax = a.x + a.dir * stub;
-    const bx = b.x + b.dir * stub;
+    if(Math.abs(dy) < 0.5){
+      return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+    }
+    const ax = a.x + aOut * 14;
+    const bx = b.x + bIn * 14;
     const midX = (ax + bx) / 2;
-
     if(style === 'step'){
-      if(Math.abs(a.y - b.y) < 0.5){
-        // 同高时退化为直线，避免无意义的折角
-        return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
-      }
       return `M ${a.x} ${a.y} L ${ax} ${a.y} L ${midX} ${a.y} ` +
              `L ${midX} ${b.y} L ${bx} ${b.y} L ${b.x} ${b.y}`;
     }
-
-    // smoothstep：起点段 → 圆角 → 竖直段 → 圆角 → 终点段
-    if(Math.abs(a.y - b.y) < 0.5){
-      return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
-    }
-    const r = Math.min(12, Math.abs(midX - ax), Math.abs(bx - midX), Math.abs(b.y - a.y) / 2);
+    const r = Math.max(4, Math.min(12, Math.abs(midX - ax), Math.abs(dy) / 2));
     const sx = Math.sign(midX - ax) || 1;
-    const sy = Math.sign(b.y - a.y) || 1;
+    const sy = Math.sign(dy) || 1;
     return [
       `M ${a.x} ${a.y}`,
       `L ${midX - sx * r} ${a.y}`,
@@ -604,9 +645,10 @@ function linkPath(a, b, style){
     ].join(' ');
   }
 
-  // bezier（默认）
-  const c1x = a.x + a.dir * k;
-  const c2x = b.x + b.dir * k;
+  // bezier：控制点长度只取水平距离的一半，并设上限；不因端口朝向而额外外推。
+  const k = Math.max(24, Math.min(Math.abs(dx) * 0.55, 150));
+  const c1x = a.x + aOut * k;
+  const c2x = b.x + bIn * k;
   return `M ${a.x} ${a.y} C ${c1x} ${a.y}, ${c2x} ${b.y}, ${b.x} ${b.y}`;
 }
 
@@ -648,13 +690,21 @@ function drawWires(){
   wirehits.innerHTML = hits;
 
   if(state.linking){
-    const a = portCenter(state.linking.from, state.linking.fromPort);
+    const a = portAnchor(state.linking.from, state.linking.fromPort);
     if(a){
-      // 从起点拖出的虚线
-      const b = { x: state.linking.x, y: state.linking.y };
-      const dx = Math.max(46, Math.abs(b.x-a.x)*0.5);
-      html += `<path d="M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${b.x-dx} ${b.y}, ${b.x} ${b.y}"
-                stroke="var(--accent)" stroke-width="2" stroke-dasharray="5 4" fill="none"/>`;
+      // 吸附优先：若指针附近有兼容端口，预览线直接连到那个端口的锚点
+      let b = null;
+      if(state.linking.snap && state.linking.snap.anchor){
+        b = state.linking.snap.anchor;
+      } else {
+        // 未吸附：把鼠标点当作"待接入的端口"，其法线朝向应与来向相反，
+        // 即鼠标在起点右侧时该虚拟端口朝左(in=-1)，反之朝右(+1)。
+        const mx = state.linking.x, my = state.linking.y;
+        b = { x: mx, y: my, dir: (mx >= a.x ? -1 : 1) };
+      }
+      const d = linkPath(a, b, state.edgeStyle);
+      html += `<path d="${d}" stroke="var(--accent)" stroke-width="2"
+                stroke-dasharray="6 5" fill="none" opacity=".95"/>`;
     }
   }
   wires.innerHTML = html;
@@ -670,6 +720,16 @@ function beginPan(ev){
 }
 
 world.addEventListener('pointermove', ev => {
+  // 拖线中：更新预览线终点（canvas 为 pointer-events:none，移动事件落在这里）
+  if(state.linking){
+    const w = screenToWorld(ev.clientX, ev.clientY);
+    state.linking.x = w.x;
+    state.linking.y = w.y;
+    state.linking.snap = findSnapTarget(ev.clientX, ev.clientY);
+    markSnapped(state.linking.snap);
+    drawWires();
+    return;
+  }
   const p = state.panning;
   if(!p) return;
   const dx = ev.clientX - p.startX, dy = ev.clientY - p.startY;
@@ -684,7 +744,26 @@ world.addEventListener('pointermove', ev => {
   }
 });
 
-world.addEventListener('pointerup', ev => {
+world.addEventListener('pointerup', async ev => {
+  // 拖线松手：优先吸附目标，其次看指针下方端口
+  if(state.linking){
+    const snap = state.linking.snap;
+    const link = state.linking;
+    let dstNode = null, dstPort = null;
+    if(snap){ dstNode = snap.node; dstPort = snap.port; }
+    else {
+      const target = document.elementFromPoint(ev.clientX, ev.clientY);
+      const wantDir = link.fromDir === 'out' ? 'in' : 'out';
+      const portEl = target && target.closest ? target.closest(`.port[data-dir="${wantDir}"]`) : null;
+      if(portEl){ dstNode = portEl.dataset.node; dstPort = portEl.dataset.port; }
+    }
+    state.linking = null;
+    clearHighlight();
+    drawWires();
+    if(dstNode) await tryConnect(link, dstNode, dstPort);
+    return;
+  }
+
   const p = state.panning;
   state.panning = null;
   wrap.style.cursor = 'grab';
@@ -797,8 +876,12 @@ canvas.addEventListener('pointerdown', ev => {
       from: portEl.dataset.node, fromPort: portEl.dataset.port,
       fromDir: portEl.dataset.dir,
       dataType: portEl.dataset.type,
-      x: ev.clientX - wr.left, y: ev.clientY - wr.top
+      x: 0, y: 0   // world 坐标，随指针更新（见 pointermove）
     };
+    {
+      const w = screenToWorld(ev.clientX, ev.clientY);
+      state.linking.x = w.x; state.linking.y = w.y;
+    }
     highlightCompatible(state.linking.dataType, state.linking.fromDir);
     $('linkHint').classList.add('show');
     drawWires();
@@ -840,9 +923,19 @@ function highlightCompatible(dataType, fromDir){
     const ok = p.dataset.type === dataType || dataType === 'Any' || p.dataset.type === 'Any';
     p.classList.add(ok ? 'compat' : 'incompat');
   });
+  canvas.querySelectorAll('.port.snapped').forEach(p => p.classList.remove('snapped'));
+}
+
+/** 标记当前吸附中的端口，给出明确的落点反馈。 */
+function markSnapped(snap){
+  canvas.querySelectorAll('.port.snapped').forEach(p => p.classList.remove('snapped'));
+  if(!snap) return;
+  const el = canvas.querySelector(
+    `.port[data-node="${snap.node}"][data-port="${snap.port}"]`);
+  if(el) el.classList.add('snapped');
 }
 function clearHighlight(){
-  canvas.querySelectorAll('.port').forEach(p => p.classList.remove('compat','incompat'));
+  canvas.querySelectorAll('.port').forEach(p => p.classList.remove('compat','incompat','snapped'));
   $('linkHint').classList.remove('show');
 }
 
@@ -884,13 +977,8 @@ window.addEventListener('keydown', e => {
 });
 
 canvas.addEventListener('pointermove', ev => {
-  if(state.linking){
-    const wr = wrap.getBoundingClientRect();
-    state.linking.x = ev.clientX - wr.left;
-    state.linking.y = ev.clientY - wr.top;
-    drawWires();
-    return;
-  }
+  // 拖线更新统一由 world 处理，这里只处理节点拖动，避免重复覆盖坐标
+  if(state.linking) return;
   if(!drag) return;
   const n = nodeById(drag.id);
   n.x = Math.max(0, drag.ox + (ev.clientX - drag.startX));
@@ -902,19 +990,29 @@ canvas.addEventListener('pointermove', ev => {
 
 canvas.addEventListener('pointerup', async ev => {
   if(state.linking){
-    const target = document.elementFromPoint(ev.clientX, ev.clientY);
-    // 落点方向与起拖方向相反：从 out 起拖找 in，从 in 起拖找 out（反向连线）
-    const wantDir = state.linking.fromDir === 'out' ? 'in' : 'out';
-    const portEl = target && target.closest
-      ? target.closest(`.port[data-dir="${wantDir}"]`)
-      : null;
+    // 松手优先使用吸附目标：用户只需把指针拖到端口附近，无需精确命中
+    const snap = state.linking.snap;
     const link = state.linking;
+    let dstNode = null, dstPort = null;
+
+    if(snap){
+      dstNode = snap.node;
+      dstPort = snap.port;
+    } else {
+      const target = document.elementFromPoint(ev.clientX, ev.clientY);
+      const wantDir = link.fromDir === 'out' ? 'in' : 'out';
+      const portEl = target && target.closest
+        ? target.closest(`.port[data-dir="${wantDir}"]`)
+        : null;
+      if(portEl){ dstNode = portEl.dataset.node; dstPort = portEl.dataset.port; }
+    }
+
     state.linking = null;
     clearHighlight();
     drawWires();
 
-    if(portEl){
-      await tryConnect(link, portEl.dataset.node, portEl.dataset.port);
+    if(dstNode){
+      await tryConnect(link, dstNode, dstPort);
     }
     return;
   }
