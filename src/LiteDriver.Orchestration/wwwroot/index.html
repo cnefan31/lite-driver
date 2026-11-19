@@ -62,14 +62,21 @@
     var(--canvas)}
   /* 不能用 none：父级 none 会阻断子 path 的 pointer-events:stroke 命中，
      导致连线点不中、删不掉。改为 auto，仅让带 data-edge 的厚热区可命中。 */
-  /* svg 必须位于 .canvas 之上才能收到点击（否则被 canvas 遮挡，连线永远删不掉）。
-     整体 pointer-events:none 让节点与端口照常可操作，仅 data-edge 热区开启 stroke 命中。 */
-  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3}
-  svg.wires path[data-edge]{pointer-events:stroke}
-  .canvas{position:absolute;inset:0}
+  /* 连线必须画在节点之下：svg 置于 DOM 中 .canvas 之前，且不加 z-index。
+     若把 svg 抬到节点之上，线条会横穿卡片，视觉上一团乱。
+     命中问题改用「canvas 本身不拦截、热区单独可点」解决，见 .canvas 与 path[data-edge]。 */
+  /* 可见连线在节点之下；命中用独立的上层热区层，两者不互相遮挡。 */
+  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+  /* 热区在最上层，才能点到被节点覆盖的线段；宽度收窄到 12 以免大面积遮挡节点拖动。 */
+  svg.wirehits{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:6}
+  svg.wirehits path{pointer-events:stroke}
+  /* canvas 只承载节点，本身不吃事件；空白拖动由 wrap 兜底。
+     这样位于其下的 svg 热区仍能被点到。 */
+  .canvas{position:absolute;inset:0;pointer-events:none}
+  .canvas .node{pointer-events:auto}
 
   /* 节点 */
-  .node{position:absolute;width:184px;border-radius:10px;background:var(--panel);
+  .node{position:absolute;width:230px;border-radius:10px;background:var(--panel);
     border:1px solid var(--line-2);box-shadow:0 6px 18px rgba(0,0,0,.34);cursor:grab;
     user-select:none;transition:box-shadow .13s,border-color .13s}
   .node:hover{border-color:#48536a}
@@ -85,15 +92,21 @@
   .node-body .kv{display:flex;justify-content:space-between;gap:6px}
   .node-body .kv span:last-child{color:#bdc6d4;font-family:var(--mono);font-size:10.5px;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .ports{display:flex;justify-content:space-between;padding:0 0 6px;min-height:14px}
+  /* 横向两列：输入列靠左、输出列靠右。翻转时两列整体换边。
+     列内单个端口允许文字换行，避免截断。 */
+  .ports{display:flex;justify-content:space-between;gap:10px;padding:0 8px 6px;align-items:flex-start}
+  .port-col{display:flex;flex-direction:column;gap:2px;min-width:0;flex:0 1 auto}
   .port-col{display:flex;flex-direction:column;gap:3px}
   .port{display:flex;align-items:center;gap:6px;font:10px var(--mono);color:#8b96a8;
-    cursor:crosshair;padding:4px 7px;border-radius:5px;transition:.12s;
-    min-height:20px;-webkit-user-select:none;user-select:none}
-  .port .plabel{white-space:nowrap}
+    cursor:crosshair;padding:3px 6px;border-radius:5px;transition:.12s;
+    min-height:19px;-webkit-user-select:none;user-select:none}
+  /* 输入靠左，输出靠右 */
+  /* 输入：圆点在最左（flex-start）；输出：圆点在最右（flex-end）。
+     输出 DOM 顺序是 类型→标签→方向→圆点，内容靠右即圆点贴右边框。 */
+  .port.in{justify-content:flex-start}
+  .port.out{justify-content:flex-end}
+  .port .plabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   .port .pdir{font-size:8px;color:#5c6878;flex:0 0 auto}
-  .node.flipped .port.in .pdir{transform:rotate(180deg)}
-  .node.flipped .port.out .pdir{transform:rotate(180deg)}
   .port:hover{background:rgba(76,141,255,.14);color:var(--accent)}
   /* 注意：翻转靠交换 DOM 列顺序实现（见 renderNodes），
      此处不能再加 row-reverse，否则两者抵消，位置纹丝不动。 */
@@ -101,11 +114,11 @@
     border:1px solid var(--line);border-radius:3px;padding:0 3px;flex:0 0 auto}
   .port:hover .ptype{color:#9db4d0;border-color:var(--line-2)}
   .node.flipped .node-head{flex-direction:row-reverse}
+
   .port.in{cursor:default}
   .port.in:hover{background:rgba(255,255,255,.05);color:#8b96a8}
   .port .pdot{width:11px;height:11px;border-radius:50%;background:var(--panel-2);
     border:2px solid var(--line-2);flex:0 0 11px;transition:.12s}
-  .port.out{flex-direction:row-reverse;text-align:right}
   .port.linked .pdot{background:var(--accent);border-color:var(--accent)}
   .port.compat .pdot{background:var(--ok);border-color:var(--ok);box-shadow:0 0 6px var(--ok)}
   .port.incompat{opacity:.32;cursor:not-allowed}
@@ -187,8 +200,10 @@
   </aside>
 
   <div class="canvas-wrap" id="canvasWrap">
-    <div class="canvas" id="canvas"></div>
     <svg class="wires" id="wires"></svg>
+    <div class="canvas" id="canvas"></div>
+    <!-- 热区层：位于节点之上，只包含可点击的粗描边（透明），负责删线命中 -->
+    <svg class="wirehits" id="wirehits"></svg>
     <div class="linkhint" id="linkHint">松开以连接到高亮的输入端口 · Esc 取消</div>
     <div class="drawer" id="drawer">
       <h4><span>事件流</span><span id="drawerClose" style="cursor:pointer">✕</span></h4>
@@ -225,7 +240,7 @@ const state = {
 };
 
 const $ = id => document.getElementById(id);
-const canvas = $('canvas'), wires = $('wires'), wrap = $('canvasWrap');
+const canvas = $('canvas'), wires = $('wires'), wirehits = $('wirehits'), wrap = $('canvasWrap');
 
 const TYPE_COLORS = {
   protocol:'#8b6ce8', client:'#4c8dff', server:'#3ecf8e',
@@ -311,17 +326,15 @@ function renderNodes(){
     const inCol = `<div class="port-col in-col">${ins.map(p => `
         <div class="port in" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="in"
              data-type="${esc(p.dataType)}" title="输入端口（连线终点，不可起拖）· ${esc(p.label)} · ${esc(p.dataType)}${p.required?' · 必连':''}">
-          <span class="pdot"></span><span class="pdir">◀</span><span class="plabel">${esc(p.label)}</span>
+          <span class="pdot"></span><span class="plabel">${esc(p.label)}</span>
           <span class="ptype">${esc(shortType(p.dataType))}</span></div>`).join('')}</div>`;
     const outCol = `<div class="port-col out-col">${outs.map(p => `
         <div class="port out" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="out"
              data-type="${esc(p.dataType)}" title="输出端口（从这里拖出连线）· ${esc(p.label)} · ${esc(p.dataType)}">
           <span class="ptype">${esc(shortType(p.dataType))}</span>
-          <span class="plabel">${esc(p.label)}</span><span class="pdir">▶</span><span class="pdot"></span></div>`).join('')}</div>`;
-    // 翻转：输入列与输出列互换位置
-    const portHtml = n.flipped
-      ? `<div class="ports flipped">${outCol}${inCol}</div>`
-      : `<div class="ports">${inCol}${outCol}</div>`;
+          <span class="plabel">${esc(p.label)}</span><span class="pdot"></span></div>`).join('')}</div>`;
+    // 翻转：两列整体换边 —— 输入列到右侧、输出列到左侧
+    const portHtml = `<div class="ports">${n.flipped ? outCol + inCol : inCol + outCol}</div>`;
     return `<div class="node${sel}${err}${n.flipped?' flipped':''}" data-id="${n.id}" data-type="${esc(n.nodeType)}"
                  style="left:${n.x}px;top:${n.y}px">
       <div class="node-head">
@@ -371,10 +384,20 @@ function drawWires(){
     const d = `M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${b.x-dx} ${b.y}, ${b.x} ${b.y}`;
     html += `<path d="${d}" stroke="url(#g)" stroke-width="2" fill="none" opacity=".9"
               marker-end="url(#arrow)" style="pointer-events:none"/>`;
-    // 删除热区加宽到 24，并在 hover 时高亮，避免"点不中"
-    html += `<path d="${d}" stroke="transparent" stroke-width="24" fill="none"
-              style="pointer-events:stroke;cursor:pointer" data-edge="${esc(e.id)}"/>`;
+    // 热区单独画到上层 svg（见 drawWires 末尾），此处不再输出到可见层
   }
+  // ---- 热区层：只含透明粗描边，供点击删除 ----
+  let hits = '';
+  for(const e of state.edges){
+    const a = portCenter(e.from, e.fromPort), b = portCenter(e.to, e.toPort);
+    if(!a || !b) continue;
+    const dx = Math.max(46, Math.abs(b.x-a.x)*0.5);
+    const d = `M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${b.x-dx} ${b.y}, ${b.x} ${b.y}`;
+    hits += `<path d="${d}" stroke="transparent" stroke-width="12" fill="none"
+               style="cursor:pointer" data-edge="${esc(e.id)}"/>`;
+  }
+  wirehits.innerHTML = hits;
+
   if(state.linking){
     const a = portCenter(state.linking.from, state.linking.fromPort);
     if(a){
@@ -387,6 +410,22 @@ function drawWires(){
   }
   wires.innerHTML = html;
 }
+
+wrap.addEventListener('pointerdown', ev => {
+  // 点到空白（非节点、非端口、非抽屉、非连线热区）：取消选择。
+  // 必须排除连线热区：否则这里 renderNodes() 会销毁正在被点击的 path，
+  // 导致后续 mousedown 目标错位、浏览器不再合成 click，表现为"删不掉连线"。
+  if(ev.target.closest('.node') || ev.target.closest('.port') ||
+     ev.target.closest('.drawer') || ev.target.closest('#wirehits')) return;
+  if(state.linking){
+    state.linking = null;
+    clearHighlight();
+    drawWires();
+    return;
+  }
+  state.selected = null;
+  renderNodes(); renderProps();
+});
 
 wrap.addEventListener('dragover', ev => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; });
 wrap.addEventListener('drop', ev => {
@@ -566,12 +605,12 @@ function removeEdge(id){
   }
 }
 
-wires.addEventListener('click', ev => {
+wirehits.addEventListener('click', ev => {
   const id = ev.target.dataset && ev.target.dataset.edge;
   if(id) removeEdge(id);
 });
 
-wires.addEventListener('contextmenu', ev => {
+wirehits.addEventListener('contextmenu', ev => {
   const id = ev.target.dataset && ev.target.dataset.edge;
   if(!id) return;
   ev.preventDefault();
@@ -580,7 +619,7 @@ wires.addEventListener('contextmenu', ev => {
 
 // hover 连线时高亮，提示可点击删除
 let hoverEdge = null;
-wires.addEventListener('pointermove', ev => {
+wirehits.addEventListener('pointermove', ev => {
   const id = ev.target.dataset && ev.target.dataset.edge;
   if(id === hoverEdge) return;
   hoverEdge = id;
