@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """编排服务端到端验证：热应用、端口回写、客户端连通、增删节点，全程不重启进程。"""
 import json
+import os
 import sys
 import time
 import urllib.request
 
-BASE = "http://127.0.0.1:8111"
+BASE = os.environ.get("ORCH_BASE", "http://127.0.0.1:8110")
 
 
 def call(path, payload=None):
