@@ -460,15 +460,46 @@ function addNode(type, x, y){
       if(opts.length && !settings[f.key]) settings[f.key] = opts[0].value;
     }
   }
+  // 放置位置避让：若与已有节点重叠，自动错开，避免新节点盖在旧节点上看不见
+  const NODE_W = 230, NODE_H = 150, GAP = 16;
+  let px = Math.max(8, Math.round(x));
+  let py = Math.max(8, Math.round(y));
+  for(let guard = 0; guard < 40; guard++){
+    const clash = state.nodes.some(o =>
+      Math.abs(o.x - px) < NODE_W + GAP && Math.abs(o.y - py) < NODE_H + GAP);
+    if(!clash) break;
+    px += NODE_W + GAP;
+    if(px > 900){ px = 40; py += NODE_H + GAP; }
+  }
+
   const n = {
     id: uid(type), nodeType: type,
-    label: t.displayName, x: Math.max(8, Math.round(x)), y: Math.max(8, Math.round(y)),
+    label: t.displayName, x: px, y: py,
     settings
   };
   state.nodes.push(n);
   state.selected = n.id;
   renderNodes(); renderProps();
   setMsg('已添加 ' + t.displayName);
+}
+
+/** 复制一个节点（含其设置），偏移 28px 放置，不复制连线。 */
+function duplicateNode(id){
+  const src = nodeById(id);
+  if(!src) return;
+  const t = typeOf(src.nodeType);
+  const copy = {
+    id: uid(src.nodeType),
+    nodeType: src.nodeType,
+    label: (src.label || t?.displayName || src.nodeType) + ' 副本',
+    x: src.x + 28, y: src.y + 28,
+    flipped: !!src.flipped,
+    settings: JSON.parse(JSON.stringify(src.settings || {}))
+  };
+  state.nodes.push(copy);
+  state.selected = copy.id;
+  renderNodes(); renderProps();
+  setMsg('已复制节点');
 }
 
 /* 拖动 / 选中 / 连线 */
@@ -479,22 +510,16 @@ canvas.addEventListener('pointerdown', ev => {
   if(portEl){
     ev.preventDefault(); ev.stopPropagation();
 
-    // 从「输入」端口起拖没有意义：输入是连线终点。给明确提示，避免用户以为坏了。
-    if(portEl.dataset.dir !== 'out'){
-      const owner = nodeById(portEl.dataset.node);
-      const label = (typeOf(owner?.nodeType)?.ports || [])
-        .find(x => x.id === portEl.dataset.port)?.label || portEl.dataset.port;
-      setMsg(`「${label}」是输入端口，不能从它起拖；请从上游节点的输出端口拖向它`, 'bad');
-      toast('输入端口不能起拖，请从输出端口拖过来', 'bad');
-      return;
-    }
+    // 双向拖线：从输出端口拖向输入端口，或从输入端口反向拖向输出端口。
+    // 业界编辑器（litegraph / React Flow）均支持反向拖，避免用户必须记住起拖方向。
     const wr = wrap.getBoundingClientRect();
     state.linking = {
       from: portEl.dataset.node, fromPort: portEl.dataset.port,
+      fromDir: portEl.dataset.dir,
       dataType: portEl.dataset.type,
       x: ev.clientX - wr.left, y: ev.clientY - wr.top
     };
-    highlightCompatible(state.linking.dataType);
+    highlightCompatible(state.linking.dataType, state.linking.fromDir);
     $('linkHint').classList.add('show');
     drawWires();
     return;
@@ -519,8 +544,18 @@ canvas.addEventListener('pointerdown', ev => {
   }
 });
 
-function highlightCompatible(dataType){
-  canvas.querySelectorAll('.port[data-dir="in"]').forEach(p => {
+/**
+ * 拖动时高亮候选端口。
+ * @param {string} dataType 起拖端口的类型
+ * @param {string} fromDir  起拖端口的方向：'out' 则候选是输入端口，'in' 则候选是输出端口
+ */
+function highlightCompatible(dataType, fromDir){
+  const want = fromDir === 'out' ? 'in' : 'out';
+  canvas.querySelectorAll('.port').forEach(p => {
+    if(p.dataset.dir !== want){
+      p.classList.remove('compat','incompat');
+      return;
+    }
     p.classList.remove('compat','incompat');
     const ok = p.dataset.type === dataType || dataType === 'Any' || p.dataset.type === 'Any';
     p.classList.add(ok ? 'compat' : 'incompat');
@@ -533,11 +568,38 @@ function clearHighlight(){
 
 // Esc 取消连线
 window.addEventListener('keydown', e => {
-  if(e.key === 'Escape' && state.linking){
-    state.linking = null;
-    clearHighlight();
-    drawWires();
-    setMsg('已取消连线');
+  // 输入框内不拦截按键，避免误删
+  const t = e.target;
+  if(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+
+  if(e.key === 'Escape'){
+    if(state.linking){
+      state.linking = null;
+      clearHighlight();
+      drawWires();
+      setMsg('已取消连线');
+      return;
+    }
+    if(state.selected){
+      state.selected = null;
+      renderNodes(); renderProps();
+    }
+    return;
+  }
+
+  // Delete / Backspace 删除选中节点（业界编辑器通行操作）
+  if(e.key === 'Delete' || e.key === 'Backspace'){
+    if(!state.selected) return;
+    e.preventDefault();
+    deleteNode(state.selected);
+    return;
+  }
+
+  // Ctrl/Cmd+D 复制选中节点
+  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd'){
+    if(!state.selected) return;
+    e.preventDefault();
+    duplicateNode(state.selected);
   }
 });
 
@@ -561,7 +623,11 @@ canvas.addEventListener('pointermove', ev => {
 canvas.addEventListener('pointerup', async ev => {
   if(state.linking){
     const target = document.elementFromPoint(ev.clientX, ev.clientY);
-    const portEl = target && target.closest ? target.closest('.port[data-dir="in"]') : null;
+    // 落点方向与起拖方向相反：从 out 起拖找 in，从 in 起拖找 out（反向连线）
+    const wantDir = state.linking.fromDir === 'out' ? 'in' : 'out';
+    const portEl = target && target.closest
+      ? target.closest(`.port[data-dir="${wantDir}"]`)
+      : null;
     const link = state.linking;
     state.linking = null;
     clearHighlight();
@@ -581,27 +647,34 @@ canvas.addEventListener('pointerup', async ev => {
 
 /** 连线前先问后端「这两个端口能不能连」，避免用户连出非法边。 */
 async function tryConnect(link, toNode, toPort){
-  const from = nodeById(link.from), to = nodeById(toNode);
+  // 反向拖线时，起拖端是输入、落点是输出，需要交换成「输出 → 输入」
+  const reversed = link.fromDir === 'in';
+  const srcNode = reversed ? toNode : link.from;
+  const srcPort = reversed ? toPort : link.fromPort;
+  const dstNode = reversed ? link.from : toNode;
+  const dstPort = reversed ? link.fromPort : toPort;
+
+  const from = nodeById(srcNode), to = nodeById(dstNode);
   if(!from || !to) return;
   if(from.id === to.id){ setMsg('不能连接到自己', 'bad'); return; }
 
   try{
     const r = await api('/api/connectable', {
-      fromNodeType: from.nodeType, fromPort: link.fromPort,
-      toNodeType: to.nodeType, toPort
+      fromNodeType: from.nodeType, fromPort: srcPort,
+      toNodeType: to.nodeType, toPort: dstPort
     });
     if(!r.ok){ setMsg('无法连接：' + (r.reason || '类型不匹配'), 'bad'); toast('端口类型不匹配', 'bad'); return; }
   }catch(e){
     // 后端不可用时退回前端本地判断
-    const tp = typeOf(to.nodeType)?.ports.find(p => p.id === toPort);
+    const tp = typeOf(to.nodeType)?.ports.find(p => p.id === dstPort);
     if(tp && !(tp.dataType === link.dataType || tp.dataType === 'Any' || link.dataType === 'Any')){
       setMsg('无法连接：端口类型不匹配', 'bad'); return;
     }
   }
 
   // 一个输入端口只接一条线
-  state.edges = state.edges.filter(e => !(e.to === toNode && e.toPort === toPort));
-  state.edges.push({ id: uid('e'), from: link.from, fromPort: link.fromPort, to: toNode, toPort });
+  state.edges = state.edges.filter(e => !(e.to === dstNode && e.toPort === dstPort));
+  state.edges.push({ id: uid('e'), from: srcNode, fromPort: srcPort, to: dstNode, toPort: dstPort });
   renderNodes();
   setMsg(`已连接 ${from.label} → ${to.label}`);
 }
