@@ -92,6 +92,8 @@
     min-height:20px;-webkit-user-select:none;user-select:none}
   .port .plabel{white-space:nowrap}
   .port:hover{background:rgba(76,141,255,.14);color:var(--accent)}
+  .port.in{cursor:default}
+  .port.in:hover{background:rgba(255,255,255,.05);color:#8b96a8}
   .port .pdot{width:11px;height:11px;border-radius:50%;background:var(--panel-2);
     border:2px solid var(--line-2);flex:0 0 11px;transition:.12s}
   .port.out{flex-direction:row-reverse;text-align:right}
@@ -292,11 +294,11 @@ function renderNodes(){
     const portHtml = `<div class="ports">
         <div class="port-col">${ins.map(p => `
           <div class="port in" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="in"
-               data-type="${esc(p.dataType)}" title="可接入 · ${esc(p.label)} · ${esc(p.dataType)}${p.required?' · 必连':''}">
+               data-type="${esc(p.dataType)}" title="输入端口（连线终点，不可起拖）· ${esc(p.label)} · ${esc(p.dataType)}${p.required?' · 必连':''}">
             <span class="pdot"></span><span class="plabel">${esc(p.label)}</span></div>`).join('')}</div>
         <div class="port-col">${outs.map(p => `
           <div class="port out" data-node="${n.id}" data-port="${esc(p.id)}" data-dir="out"
-               data-type="${esc(p.dataType)}" title="拖出以连接 · ${esc(p.label)} · ${esc(p.dataType)}">
+               data-type="${esc(p.dataType)}" title="输出端口（从这里拖出连线）· ${esc(p.label)} · ${esc(p.dataType)}">
             <span class="pdot"></span><span class="plabel">${esc(p.label)}</span></div>`).join('')}</div>
       </div>`;
     return `<div class="node${sel}${err}" data-id="${n.id}" data-type="${esc(n.nodeType)}"
@@ -399,7 +401,16 @@ canvas.addEventListener('pointerdown', ev => {
   const portEl = ev.target.closest('.port');
   if(portEl){
     ev.preventDefault(); ev.stopPropagation();
-    if(portEl.dataset.dir !== 'out') return;
+
+    // 从「输入」端口起拖没有意义：输入是连线终点。给明确提示，避免用户以为坏了。
+    if(portEl.dataset.dir !== 'out'){
+      const owner = nodeById(portEl.dataset.node);
+      const label = (typeOf(owner?.nodeType)?.ports || [])
+        .find(x => x.id === portEl.dataset.port)?.label || portEl.dataset.port;
+      setMsg(`「${label}」是输入端口，不能从它起拖；请从上游节点的输出端口拖向它`, 'bad');
+      toast('输入端口不能起拖，请从输出端口拖过来', 'bad');
+      return;
+    }
     const wr = wrap.getBoundingClientRect();
     state.linking = {
       from: portEl.dataset.node, fromPort: portEl.dataset.port,
