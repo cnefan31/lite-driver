@@ -132,6 +132,7 @@ public static class GraphMigration
             var legacy = node.Kind ?? "";
             node.NodeType = legacy switch
             {
+                // 协议不再是独立节点：旧图里的 protocol 节点在迁移末尾被并入下游设备后删除
                 "Protocol" => "protocol",
                 "Client" => "client",
                 "Server" => "server",
@@ -167,6 +168,51 @@ public static class GraphMigration
                 edge.ToPort = DefaultInputPort(to.NodeType);
             }
         }
+
+        // 协议节点在旧图里是外挂对象；新模型并入设备自身属性后移除该节点。
+        FoldProtocolNodesIntoDevices(graph);
+    }
+
+    /// <summary>
+    /// 把旧图里的 protocol 节点并入下游设备节点的 kindId 字段，然后移除该节点。
+    /// 协议现在是设备节点自身的属性，不再是画布对象。
+    /// </summary>
+    private static void FoldProtocolNodesIntoDevices(OrchestrationGraph graph)
+    {
+        var protocolNodes = graph.Nodes.Where(n => n.NodeType == "protocol").ToList();
+        if (protocolNodes.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var proto in protocolNodes)
+        {
+            var kindId = proto.Get("kindId");
+            if (kindId.Length == 0)
+            {
+                continue;
+            }
+
+            // 找到所有从该协议节点连出的设备，补上 kindId
+            foreach (var edge in graph.Edges.Where(e => e.From == proto.Id))
+            {
+                var device = graph.Nodes.FirstOrDefault(n => n.Id == edge.To);
+                if (device is null || device.NodeType is not ("client" or "server"))
+                {
+                    continue;
+                }
+
+                if (device.Get("kindId").Length == 0)
+                {
+                    device.Settings["kindId"] = kindId;
+                }
+            }
+        }
+
+        // 移除协议节点及其连线
+        var removeIds = protocolNodes.Select(p => p.Id).ToHashSet(StringComparer.Ordinal);
+        graph.Nodes.RemoveAll(n => removeIds.Contains(n.Id));
+        graph.Edges.RemoveAll(e => removeIds.Contains(e.From) || removeIds.Contains(e.To));
     }
 
     /// <summary>各类型的默认输出端口。</summary>

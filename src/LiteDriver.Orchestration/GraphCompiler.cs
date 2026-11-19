@@ -145,10 +145,8 @@ public static class GraphCompiler
 
     /// <summary>默认节点类型目录（六个内置类型）。</summary>
     public static NodeTypeCatalog DefaultNodeTypes() => new NodeTypeCatalog()
-        .Register(new BuiltInNodeTypes.ProtocolType())
         .Register(new BuiltInNodeTypes.ClientType())
         .Register(new BuiltInNodeTypes.ServerType())
-        .Register(new BuiltInNodeTypes.CodecType())
         .Register(new BuiltInNodeTypes.TransformType())
         .Register(new BuiltInNodeTypes.HandlerType())
         .Register(new BuiltInNodeTypes.SinkType());
@@ -253,33 +251,6 @@ public static class GraphCompiler
         return false;
     }
 
-    /// <summary>由客户端/服务端节点反查它接入的协议节点。</summary>
-    private static string? FindProtocolKind(
-        OrchestrationGraph graph,
-        GraphNode entity,
-        string inputPort,
-        NodeTypeCatalog types)
-    {
-        var edge = graph.Edges.FirstOrDefault(e =>
-            string.Equals(e.To, entity.Id, StringComparison.Ordinal) &&
-            string.Equals(e.ToPort, inputPort, StringComparison.Ordinal));
-
-        if (edge is null)
-        {
-            return null;
-        }
-
-        var proto = graph.Nodes.FirstOrDefault(n => n.Id == edge.From);
-        if (proto is null)
-        {
-            return null;
-        }
-
-        // 兼容旧图：协议节点也可能直接是 out/in 端口
-        var kindId = proto.Get("kindId").Trim();
-        return kindId.Length == 0 ? null : kindId;
-    }
-
     private static CompileResult BuildConfig(
         OrchestrationGraph graph,
         NodeTypeCatalog types,
@@ -299,11 +270,14 @@ public static class GraphCompiler
             {
                 case "client":
                 {
-                    var kindId = FindProtocolKind(graph, node, "codec", types);
-                    if (kindId is null || !knownKinds.Contains(kindId))
+                    // 协议与编解码器是节点自身属性
+                    var kindId = node.Get("kindId").Trim();
+                    if (kindId.Length == 0 || !knownKinds.Contains(kindId))
                     {
                         break; // 已在节点校验中报告
                     }
+
+                    var codecId = node.Get("codecId").Trim();
 
                     var deviceId = string.IsNullOrWhiteSpace(node.Get("deviceId"))
                         ? node.Id
@@ -339,18 +313,21 @@ public static class GraphCompiler
                             ConnectTimeoutMs = Math.Clamp(node.GetInt("connectTimeoutMs", 3_000), 100, 600_000),
                             Jitter = 0.2
                         },
-                        Heartbeat = new HeartbeatOptions { Enabled = node.GetBool("heartbeatEnabled") }
+                        Heartbeat = new HeartbeatOptions { Enabled = node.GetBool("heartbeatEnabled") },
+                        CodecId = codecId.Length == 0 ? null : codecId
                     });
                     break;
                 }
 
                 case "server":
                 {
-                    var kindId = FindProtocolKind(graph, node, "codec", types);
-                    if (kindId is null || !knownKinds.Contains(kindId))
+                    var kindId = node.Get("kindId").Trim();
+                    if (kindId.Length == 0 || !knownKinds.Contains(kindId))
                     {
                         break;
                     }
+
+                    var codecId = node.Get("codecId").Trim();
 
                     var listenerId = string.IsNullOrWhiteSpace(node.Get("listenerId"))
                         ? node.Id
@@ -369,7 +346,8 @@ public static class GraphCompiler
                         Host = host.Length == 0 ? "0.0.0.0" : host,
                         Port = Math.Clamp(node.GetInt("port", 0), 0, 65535),
                         MaxSessions = Math.Clamp(node.GetInt("maxSessions", 64), 1, 1024),
-                        Heartbeat = new HeartbeatOptions { Enabled = node.GetBool("heartbeatEnabled") }
+                        Heartbeat = new HeartbeatOptions { Enabled = node.GetBool("heartbeatEnabled") },
+                        CodecId = codecId.Length == 0 ? null : codecId
                     });
                     break;
                 }
@@ -404,7 +382,7 @@ public static class GraphCompiler
                 continue;
             }
 
-            var outPort = node.NodeType == "client" ? "in" : "conn";
+            var outPort = "out";
             var path = new List<string> { node.Id };
             var current = node.Id;
             var guard = 0;

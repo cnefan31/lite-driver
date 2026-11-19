@@ -697,31 +697,26 @@ async function loadInitial(){
     }
   }catch(e){ /* 首次为空 */ }
 
-  // 示例：协议 → 客户端 → 编解码器 → 处理器；协议 → 服务端 → 编解码器
-  const proto = state.nodeTypes.find(t => t.typeId === 'protocol');
-  const codecType = state.nodeTypes.find(t => t.typeId === 'codec');
-  if(!proto || !codecType) return;
+  // 示例：每个设备节点自带协议与编解码器，连线只表达数据流
+  const hasClient = !!state.typeMap['client'];
+  if(!hasClient) return;
 
-  const p = { id: uid('protocol'), nodeType:'protocol', label:'协议', x: 40, y: 210,
-    settings: defaultSettings('protocol') };
-  const c = { id: uid('client'), nodeType:'client', label:'客户端', x: 270, y: 90,
+  const c = { id: uid('client'), nodeType:'client', label:'客户端', x: 60, y: 120,
     settings: defaultSettings('client') };
-  const s = { id: uid('server'), nodeType:'server', label:'服务端', x: 270, y: 340,
+  const sNode = { id: uid('server'), nodeType:'server', label:'服务端', x: 60, y: 360,
     settings: defaultSettings('server') };
-  const k1 = { id: uid('codec'), nodeType:'codec', label:'编解码器', x: 500, y: 90,
-    settings: defaultSettings('codec') };
-  const h = { id: uid('handler'), nodeType:'handler', label:'处理器', x: 730, y: 90,
+  const h = { id: uid('handler'), nodeType:'handler', label:'处理器', x: 360, y: 120,
     settings: defaultSettings('handler') };
+  const sink = { id: uid('sink'), nodeType:'sink', label:'出口', x: 360, y: 360,
+    settings: defaultSettings('sink') };
 
-  state.nodes = [p, c, s, k1, h];
+  state.nodes = [c, sNode, h, sink];
   state.edges = [
-    { id: uid('e'), from: p.id, fromPort:'out', to: c.id, toPort:'codec' },
-    { id: uid('e'), from: p.id, fromPort:'out', to: s.id, toPort:'codec' },
-    { id: uid('e'), from: c.id, fromPort:'in', to: k1.id, toPort:'in' },
-    { id: uid('e'), from: k1.id, fromPort:'out', to: h.id, toPort:'in' }
+    { id: uid('e'), from: c.id, fromPort:'out', to: h.id, toPort:'in' },
+    { id: uid('e'), from: sNode.id, fromPort:'out', to: sink.id, toPort:'in' }
   ];
   renderNodes(); renderProps();
-  setMsg('已载入示例：客户端 → 编解码器 → 处理器（端点需按实际设备地址修改后应用）');
+  setMsg('已载入示例：客户端与服务端各自带协议和编解码器，输出去往处理器/出口（端点需按实际设备修改）');
 }
 
 (async () => {

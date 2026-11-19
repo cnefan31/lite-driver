@@ -50,35 +50,34 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 
 ## 节点与端口（连接约束）
 
-编排图由**节点**与**端口连线**组成。连接是否合法，完全由**端口数据类型**决定，不在编译器里硬编码节点种类判断。
+**每个节点都是独立的**：各自带输入/输出，用来承接上一个节点的输出、向下一个节点输出。
+**协议与编解码器是设备节点自身的属性**，不从外部节点拉线绑定——每个客户端/服务端独立维护自己的协议，互不影响。
 
-| 节点类型 | 输入端口 | 输出端口 |
-| --- | --- | --- |
-| 协议 `protocol` | 配置 `Any` | 帧格式 `IFrame` |
-| 客户端 `client` | 协议 `IFrame`（必连） | 原始帧 `IFrame` |
-| 服务端 `server` | 协议 `IFrame`（必连） | 入站帧 `IFrame` |
-| 编解码器 `codec` | 原始帧 `IFrame`（必连） | 业务消息 `IMessage` |
-| 变换 `transform` | 消息 `IMessage`（必连） | 消息 `IMessage` |
-| 处理器 `handler` | 消息 `IMessage`（必连） | — |
-| 出口 `sink` | 消息 `Any`（必连） | — |
+| 节点类型 | 输入 | 自身属性 | 输出 |
+| --- | --- | --- | --- |
+| 客户端 `client` | —（链路起点） | **协议 kindId**、**编解码器 codecId**、端点、退避、心跳 | 业务消息 `IMessage` |
+| 服务端 `server` | —（链路起点） | **协议 kindId**、**编解码器 codecId**、监听地址/端口、最大会话 | 业务消息 `IMessage` |
+| 变换 `transform` | 消息 `IMessage` | transformId、参数 | 消息 `IMessage` |
+| 处理器 `handler` | 消息 `IMessage` | handlerId、模式 | — |
+| 出口 `sink` | 消息 `Any` | sinkId、目标 | — |
 
-### 为什么客户端不能直连处理器
-
-客户端的输出是 `IFrame`，处理器的输入是 `IMessage`，类型不匹配，连线会被拒：
+### 连线只表达数据流
 
 ```
-客户端 [IFrame] ──✗──► 处理器 [IMessage]
-客户端 [IFrame] ──✓──► 编解码器 [IFrame→IMessage] ──✓──► 处理器 [IMessage]
+客户端 [自带协议+编解码器] ──IMessage──► 处理器
+                          └─IMessage──► 变换 ──IMessage──► 处理器
+服务端 [自带协议+编解码器] ──IMessage──► 出口
 ```
 
-这正是「用接口约束连接性」的实现方式：**端口类型是契约，连线时校验**。
+连线不代表"绑定"，只代表"数据从这里流到那里"。因此：
 
-### 合法链路示例
+- 两个客户端可以各自用不同协议，互不干扰
+- 不需要协议节点，也不存在"协议绑定"关系
+- 端口类型仍然约束数据流（`IMessage` 不能接只收 `IFrame` 的端口），但当前内置节点里设备已统一输出 `IMessage`
 
-```
-协议 ──► 客户端 ──► 编解码器 ──► 变换 ──► 处理器
-协议 ──► 服务端 ──► 编解码器 ──► 出口
-```
+### 为什么设备节点只有输出
+
+设备是链路起点：它从网络读数据，经自身协议的帧格式与自身编解码器转成业务消息，然后向下游输出。它不需要上游输入。
 
 ## 扩展自己的节点类型
 
@@ -116,21 +115,24 @@ var engine = new OrchestrationEngine(protocols, nodeTypes: nodeTypes);
 
 | 代码 | 含义 |
 | --- | --- |
-| `edge_type_mismatch` | 端口类型不匹配（如客户端直连处理器） |
+| `edge_type_mismatch` | 端口类型不匹配（如把 IFrame 接到 IMessage） |
 | `edge_port_missing` | 连线引用了不存在的端口 |
 | `port_required_unconnected` | 必连输入端口没有连线 |
 | `graph_cycle` | 链路存在环路 |
 | `node_type_unknown` | 节点类型未注册 |
-| `node_invalid` | 节点自身配置非法（缺 kindId、端点格式错等） |
+| `node_invalid` | 节点自身配置非法（设备缺协议、codecId 未注册、端点格式错等） |
 | `listener_port_conflict` | 两个监听节点抢占同一地址 |
 
 ## 旧图兼容
 
-0.2.0 及更早的图只有 `kind`（Protocol/Client/Server）且连线不带端口。
-读取时 `GraphMigration` 会自动补 `nodeType` 与端口，无需手工重建。
+旧图（含 `kind` 或独立 protocol/codec 节点）读取时会自动迁移：
 
-> 注意：旧图的「协议 → 客户端」语义是「客户端使用该协议」，迁移后仍成立；
-> 但旧图没有编解码器节点，因此升级后需要补一个编解码器节点才能接处理器。
+- `kind`（Protocol/Client/Server）→ `nodeType`
+- 连线无端口 → 补默认端口
+- **独立 protocol 节点的 `kindId` 并入下游设备节点，然后移除该节点**
+- 独立 codec 节点同理并入下游设备
+
+迁移后设备成为链路起点，协议与编解码器都在设备自身属性上。
 
 ## REST API
 

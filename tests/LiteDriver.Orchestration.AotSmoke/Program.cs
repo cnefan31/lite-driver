@@ -31,16 +31,15 @@ public static partial class Program
         {
             Nodes =
             [
-                Node("p", "protocol", ("kindId", "length-prefix")),
-                Node("c", "client", ("endpoints", "127.0.0.1:1")),
-                Node("k", "codec", ("codecId", "text")),
-                Node("s", "server", ("host", "127.0.0.1"), ("port", "0"))
+                Node("c", "client", ("kindId", "length-prefix"), ("codecId", "text"),
+                     ("endpoints", "127.0.0.1:1")),
+                Node("s", "server", ("kindId", "length-prefix"), ("codecId", "text"),
+                     ("host", "127.0.0.1"), ("port", "0")),
+                Node("h", "handler", ("handlerId", "log"))
             ],
             Edges =
             [
-                new GraphEdge { Id = "e1", From = "p", FromPort = "out", To = "c", ToPort = "codec" },
-                new GraphEdge { Id = "e2", From = "p", FromPort = "out", To = "s", ToPort = "codec" },
-                new GraphEdge { Id = "e3", From = "c", FromPort = "in", To = "k", ToPort = "in" }
+                new GraphEdge { Id = "e1", From = "c", FromPort = "out", To = "h", ToPort = "in" }
             ]
         };
 
@@ -50,30 +49,25 @@ public static partial class Program
         Expect(result.Config is not null, "编译产出 DriverConfig");
 
         // 负例：未连协议必须报错并可定位到节点
-        // 负例 1：客户端直连处理器 -> 端口类型不匹配
+        // 负例 1：设备缺协议 -> 节点配置非法
         var mismatch = new OrchestrationGraph
         {
             Nodes =
             [
-                Node("p", "protocol", ("kindId", "length-prefix")),
-                Node("c", "client", ("endpoints", "127.0.0.1:1")),
+                Node("c", "client", ("kindId", ""), ("endpoints", "127.0.0.1:1")),
                 Node("h", "handler", ("handlerId", "log"))
             ],
-            Edges =
-            [
-                new GraphEdge { Id = "e1", From = "p", FromPort = "out", To = "c", ToPort = "codec" },
-                new GraphEdge { Id = "e2", From = "c", FromPort = "in", To = "h", ToPort = "in" }
-            ]
+            Edges = [new GraphEdge { Id = "e1", From = "c", FromPort = "out", To = "h", ToPort = "in" }]
         };
         var badResult = GraphCompiler.Compile(
             mismatch, ["length-prefix"], GraphCompiler.DefaultNodeTypes(), new SmokeCatalogView());
-        Expect(!badResult.Ok, "客户端直连处理器被拒绝");
-        Expect(badResult.Issues.Any(i => i.Code == "edge_type_mismatch"), "拒绝原因是端口类型不匹配");
+        Expect(!badResult.Ok, "设备缺协议被拒绝");
+        Expect(badResult.Issues.Any(i => i.Code == "node_invalid"), "拒绝原因是节点配置非法");
 
         // 负例 2：必连端口未连接
         var orphan = new OrchestrationGraph
         {
-            Nodes = [Node("lonely", "server", ("host", "127.0.0.1"), ("port", "0"))],
+            Nodes = [Node("lonely", "handler", ("handlerId", "log"))],
             Edges = []
         };
         var orphanResult = GraphCompiler.Compile(
@@ -90,10 +84,10 @@ public static partial class Program
             [
                 new GraphNode
                 {
-                    Id = "p",
-                    NodeType = "protocol",
-                    Label = "协议",
-                    Settings = new Dictionary<string, string> { ["kindId"] = "stx-etx", ["start"] = "02" }
+                    Id = "c",
+                    NodeType = "client",
+                    Label = "客户端",
+                    Settings = new Dictionary<string, string> { ["kindId"] = "stx-etx", ["codecId"] = "text" }
                 }
             ],
             Edges = []
@@ -103,8 +97,8 @@ public static partial class Program
         var back = JsonSerializer.Deserialize(json, OrchestrationJsonContext.Default.OrchestrationGraph);
 
         Expect(back is not null, "源生成 JSON 往返成功");
-        Expect(back!.Nodes.Count == 1 && back.Nodes[0].NodeType == "protocol", "节点类型往返正确");
-        Expect(back.Nodes[0].Settings["start"] == "02", "协议参数往返正确");
+        Expect(back!.Nodes.Count == 1 && back.Nodes[0].NodeType == "client", "节点类型往返正确");
+        Expect(back.Nodes[0].Settings["kindId"] == "stx-etx", "协议字段往返正确");
         return Task.CompletedTask;
     }
 
@@ -125,10 +119,10 @@ public static partial class Program
         {
             Nodes =
             [
-                Node("p", "protocol", ("kindId", "length-prefix")),
-                Node("s", "server", ("host", "127.0.0.1"), ("port", "0"), ("maxSessions", "4"))
+                Node("s", "server", ("kindId", "length-prefix"), ("codecId", "text"),
+                     ("host", "127.0.0.1"), ("port", "0"), ("maxSessions", "4"))
             ],
-            Edges = [new GraphEdge { Id = "e", From = "p", FromPort = "out", To = "s", ToPort = "codec" }]
+            Edges = []
         };
 
         var report = await engine.ApplyAsync(graph);
