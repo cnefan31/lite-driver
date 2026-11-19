@@ -12,6 +12,12 @@ public static class PortTypes
     /// <summary>解码后的业务消息。</summary>
     public const string Message = "IMessage";
 
+    /// <summary>
+    /// 待发送的业务消息。与 <see cref="Message"/> 的值相同，但语义是「要写入设备」。
+    /// 单独命名是为了让端口标签与校验提示能区分收发方向。
+    /// </summary>
+    public const string Outbound = "IMessage";
+
     /// <summary>任意类型：仅用于能接受一切的终端节点，连线时视为通配。</summary>
     public const string Any = "Any";
 }

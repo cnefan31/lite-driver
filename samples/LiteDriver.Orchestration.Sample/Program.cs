@@ -274,8 +274,8 @@ public sealed class FixedPaddedEncoder : IFrameEncoder
     }
 }
 
-/// <summary>示例编解码器：长度前缀帧的载荷按 UTF-8 解码。</summary>
-public sealed class TextCodec : IPayloadCodec
+/// <summary>示例编解码器：长度前缀帧的载荷按 UTF-8 解码，并支持从纯文本构造消息。</summary>
+public sealed class TextCodec : IPayloadCodec, ITextPayloadCodec
 {
     public TextCodec(PayloadCodecContext ctx) => _ = ctx;
 
@@ -289,6 +289,9 @@ public sealed class TextCodec : IPayloadCodec
         var payload = frame.Length > 2 ? frame[2..] : default;
         return PayloadMessage.From(new TextMessage(System.Text.Encoding.UTF8.GetString(payload)), "text");
     }
+
+    /// <inheritdoc />
+    public PayloadMessage FromText(string text) => PayloadMessage.From(new TextMessage(text), "text");
 
     /// <inheritdoc />
     public void Encode(PayloadMessage message, System.Buffers.IBufferWriter<byte> writer)

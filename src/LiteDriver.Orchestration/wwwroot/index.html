@@ -102,6 +102,10 @@
   .field .hint{font-size:10px;color:#5f6878;margin-top:3px;line-height:1.35}
   .field-row{display:grid;grid-template-columns:1fr 1fr;gap:7px}
   .empty{padding:26px 13px;text-align:center;color:#5a6376;font-size:11.5px;line-height:1.7}
+  .tx-box{margin:12px 0;padding:10px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px}
+  .tx-box .tx-title{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+  .tx-box textarea{width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line-2);
+    background:var(--bg);color:var(--ink);font:11.5px var(--mono);resize:vertical}
   .ports-view{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;
     padding:8px 9px;background:var(--panel-2);border-radius:7px;border:1px solid var(--line)}
   .ports-view .pv{display:flex;justify-content:space-between;font:10px var(--mono);color:var(--muted)}
@@ -552,6 +556,17 @@ function renderProps(){
     }
   }
 
+  // 设备节点：调试直发（不经编排链路，直接写入该设备 socket）
+  if(n.nodeType === 'client' || n.nodeType === 'server'){
+    html += `<div class="tx-box">
+        <div class="tx-title">调试直发</div>
+        <div class="hint" style="margin-bottom:6px">直接用该节点自身的编解码器把文本发往 ${n.nodeType === 'client' ? '设备' : '全部入站会话'}，不经过编排链路。</div>
+        <textarea id="p-txtext" rows="2" placeholder="要发送的文本"></textarea>
+        <button class="ghost" id="p-txsend" style="width:100%;margin-top:6px">发送</button>
+        <div class="hint" id="p-txresult"></div>
+      </div>`;
+  }
+
   html += `<div class="field"><button class="ghost danger" id="p-delete" style="width:100%">删除该节点</button></div>`;
   box.innerHTML = html;
 
@@ -564,6 +579,27 @@ function renderProps(){
       renderNodes();
     }, (f.kind==='Select'||f.kind==='Bool') ? 'change' : 'input');
   }
+  const txBtn = $('p-txsend');
+  if(txBtn){
+    txBtn.onclick = async () => {
+      const text = $('p-txtext').value;
+      const box = $('p-txresult');
+      box.textContent = '发送中…';
+      try{
+        const r = await api('/api/send', { nodeId: n.id, text });
+        if(r.ok){
+          box.textContent = `已发送 ${r.bytesWritten} 字节，会话 ${r.sessionCount}`;
+          toast('已发送', 'ok');
+        } else {
+          box.textContent = `${r.status}：${r.error || ''}`;
+          toast('发送失败：' + r.status, 'bad');
+        }
+      }catch(e){
+        box.textContent = '异常：' + e.message;
+      }
+    };
+  }
+
   const del = $('p-delete');
   if(del) del.onclick = () => deleteNode(n.id);
 }

@@ -125,12 +125,12 @@ public sealed class OrchestrationCompilerTests
     // ---------------- 端口类型约束 ----------------
 
     [Fact]
-    public void DeviceOutput_IsMessage_SoCannotFeedAnotherDeviceInput()
+    public void DevicePorts_ShouldAllBeMessageTyped()
     {
-        // 设备只输出 IMessage，没有任何设备节点有 IFrame 输入端口
+        // 设备的收发都是业务消息：tx（发送）与 out（上报）
         var clientType = Types.Find("client")!;
-        Assert.DoesNotContain(clientType.Ports, p => p.Direction == PortDirection.Input);
-        Assert.Contains(clientType.Ports, p => p.Id == "out" && p.DataType == PortTypes.Message);
+        Assert.All(clientType.Ports, p => Assert.Equal(PortTypes.Message, p.DataType));
+        Assert.DoesNotContain(clientType.Ports, p => p.DataType == PortTypes.Frame);
     }
 
     [Fact]
@@ -399,14 +399,42 @@ public sealed class OrchestrationCompilerTests
     }
 
     [Fact]
-    public void DeviceTypes_ShouldHaveOnlyOutput()
+    public void DeviceTypes_ShouldHaveSendInputAndReportOutput()
     {
+        // 设备既接收（tx，用于向 socket 发送）也输出（out，设备上报）
         foreach (var typeId in new[] { "client", "server" })
         {
             var t = Types.Find(typeId)!;
-            Assert.All(t.Ports, p => Assert.Equal(PortDirection.Output, p.Direction));
-            Assert.Contains(t.Ports, p => p.Id == "out" && p.DataType == PortTypes.Message);
+            Assert.Contains(t.Ports, p =>
+                p.Id == "tx" && p.Direction == PortDirection.Input && p.DataType == PortTypes.Message);
+            Assert.Contains(t.Ports, p =>
+                p.Id == "out" && p.Direction == PortDirection.Output && p.DataType == PortTypes.Message);
         }
+    }
+
+    [Fact]
+    public void DeviceSendPort_ShouldNotBeRequired()
+    {
+        // 发送是可选的：不连 tx 也能只用接收方向
+        foreach (var typeId in new[] { "client", "server" })
+        {
+            var tx = Types.Find(typeId)!.Ports.Single(p => p.Id == "tx");
+            Assert.False(tx.Required);
+        }
+    }
+
+    [Fact]
+    public void ShouldAllowUpstreamToDeviceSendPort()
+    {
+        // 处理器产出的消息可以写入设备 tx 端口（构成发送链路）
+        var g = Graph([Client("c"), Handler("h")],
+            ("c", "out", "h", "in"),
+            ("h", "out", "c", "tx"));
+
+        // handler 没有输出端口，因此连线应被拒——说明「处理器直接写设备」需要变换节点或出口
+        var result = Compile(g);
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "edge_port_missing");
     }
 
     [Fact]

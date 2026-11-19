@@ -352,3 +352,10 @@ public sealed record ConnectionProbe(
 
 /// <summary>可连接性探测结果。</summary>
 public sealed record ConnectableResult(bool Ok, string? Reason);
+
+/// <summary>向设备节点发送一条消息的请求。消息以 JSON 文本表示。</summary>
+public sealed record NodeSendRequest(string NodeId, string Text);
+
+/// <summary>发送结果的可序列化投影。</summary>
+public sealed record NodeSendReport(bool Ok, string NodeId, string Status, int BytesWritten,
+    int SessionCount, string? Error);

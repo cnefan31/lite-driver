@@ -56,7 +56,7 @@ public sealed class OrchestrationServer : IAsyncDisposable
                  {
                      "/", "/index.html", "/api/health", "/api/state", "/api/protocols",
                      "/api/validate", "/api/apply", "/api/graph",
-                     "/api/nodetypes", "/api/connectable", "/api/registry"
+                     "/api/nodetypes", "/api/connectable", "/api/registry", "/api/send"
                  })
         {
             server.AllowAnonymous(path);
@@ -110,6 +110,28 @@ public sealed class OrchestrationServer : IAsyncDisposable
                 [.. _engine.Handlers.Select(h => new OptionInfo(h.Id, h.DisplayName))],
                 [.. _engine.Sinks.Select(s => new OptionInfo(s.Id, s.DisplayName))])),
             OrchestrationJsonContext.Relaxed.ApiEnvelopeRegistryOptions));
+
+        // 向设备节点发送一条消息（页面上的调试直发）。
+        server.Map("/api/send", async (req, res) =>
+        {
+            var body = await req.ReadBodyAsStringAsync(CancellationToken.None).ConfigureAwait(false);
+            var dto = string.IsNullOrWhiteSpace(body)
+                ? null
+                : JsonSerializer.Deserialize(body, OrchestrationJsonContext.Relaxed.NodeSendRequest);
+            if (dto is null || string.IsNullOrWhiteSpace(dto.NodeId))
+            {
+                await FailAsync(res, "请求体缺少 nodeId").ConfigureAwait(false);
+                return;
+            }
+
+            var result = await _engine.SendTextAsync(dto.NodeId, dto.Text ?? "", CancellationToken.None)
+                .ConfigureAwait(false);
+            await JsonAsync(res,
+                ApiEnvelope<NodeSendReport>.Success(new NodeSendReport(
+                    result.Ok, result.NodeId, result.Status.ToString(),
+                    result.BytesWritten, result.SessionCount, result.Error)),
+                OrchestrationJsonContext.Relaxed.ApiEnvelopeNodeSendReport).ConfigureAwait(false);
+        });
 
         server.Map("/api/state", (req, res) => JsonAsync(res,
             ApiEnvelope<OrchestrationStatus>.Success(_engine.Status()),

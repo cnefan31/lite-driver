@@ -42,16 +42,20 @@ def main():
         if gone in ids:
             failures += fail(f"协议/编解码器不应再是独立节点: {gone}")
 
-    # 2) 设备节点应只有输出端口，且协议与编解码器是自身字段
+    # 2) 设备节点：tx 发送输入 + out 上报输出；协议与编解码器是自身字段
     for dev in ("client", "server"):
         t = next(x for x in types if x["typeId"] == dev)
-        if any(p["direction"] == "Input" for p in t["ports"]):
-            failures += fail(f"{dev} 不应有输入端口（它是链路起点）")
+        ins = [p["id"] for p in t["ports"] if p["direction"] == "Input"]
+        outs = [p["id"] for p in t["ports"] if p["direction"] == "Output"]
+        if ins != ["tx"]:
+            failures += fail(f"{dev} 输入端口应只有 tx，实际 {ins}")
+        if "out" not in outs:
+            failures += fail(f"{dev} 缺少 out 输出端口")
         keys = [f["key"] for f in t["fields"]]
         for f in ("kindId", "codecId"):
             if f not in keys:
                 failures += fail(f"{dev} 缺少自身字段 {f}")
-    print("  设备节点：仅输出端口，kindId/codecId 为自身字段")
+    print("  设备节点：tx 发送输入 + out 上报输出，kindId/codecId 为自身字段")
 
     # 3) 设备输出是 IMessage，不能接入只收 IFrame 的端口（现在没有这种端口）
     ok = call("/api/connectable", {
@@ -151,6 +155,20 @@ def main():
     print(f"  删除后监听端点数={len(remaining)}")
     if len(remaining) != 1:
         failures += fail("删除节点后监听数不正确")
+
+    # 8) 发送链路：设备节点应有 tx 输入端口，且 /api/send 可用
+    for dev in ("client", "server"):
+        t = next(x for x in types if x["typeId"] == dev)
+        if not any(p["id"] == "tx" and p["direction"] == "Input" for p in t["ports"]):
+            failures += fail(f"{dev} 缺少发送输入端口 tx")
+    print("  设备节点具备 tx 发送输入端口")
+
+    # 正常发送：节点已配置 codec 且链路就绪，应成功
+    send = call("/api/send", {"nodeId": "cli", "text": "verify-tx"})
+    if not send["ok"]:
+        failures += fail(f"客户端发送失败: {send['status']} {send['error']}")
+    else:
+        print(f"  客户端发送 {send['bytesWritten']} 字节，会话 {send['sessionCount']}")
 
     print("ALL CHECKS PASSED" if failures == 0 else f"{failures} CHECK(S) FAILED")
     return failures

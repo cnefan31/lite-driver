@@ -72,6 +72,19 @@ public interface IPayloadCodec
     void Encode(PayloadMessage message, IBufferWriter<byte> writer);
 }
 
+/// <summary>
+/// 可选扩展：把业务消息表示为纯文本，供「页面调试直发」「日志回显」等通用场景使用。
+/// <para>
+/// 引擎无法凭空构造任意 codec 的消息类型（如 <c>TextMessage</c>），
+/// 因此需要文本互操作的 codec 实现本接口，通用入口才能把一段文本变成该 codec 的消息。
+/// </para>
+/// </summary>
+public interface ITextPayloadCodec
+{
+    /// <summary>把一段文本包装成该 codec 能编码的消息。</summary>
+    PayloadMessage FromText(string text);
+}
+
 /// <summary>载荷解码失败。抛出即视为协议错误，当前链路会被拆除。</summary>
 public sealed class PayloadDecodeException : Exception
 {
@@ -193,4 +206,21 @@ public readonly struct PayloadCodecContext
 
     /// <summary>codec 私有参数，已 Clone，可安全长期持有。</summary>
     public JsonElement? CodecSettings { get; }
+
+    /// <summary>
+    /// 公开构造入口，供库外代码（例如编排层、诊断工具）按 codecId 创建 codec 实例
+    /// 以完成一次性编码/解码，而不经由驱动内部连接。
+    /// </summary>
+    /// <param name="codecId">codec 标识。</param>
+    /// <param name="targetId">设备或监听标识，仅用于诊断。</param>
+    /// <param name="direction">方向。</param>
+    /// <param name="limits">资源上限；传 <c>null</c> 使用默认值。</param>
+    /// <param name="codecSettings">codec 私有参数。</param>
+    public static PayloadCodecContext CreateForStandalone(
+        string codecId,
+        string targetId,
+        ConnectionDirection direction,
+        DriverLimits? limits = null,
+        JsonElement? codecSettings = null) =>
+        new(codecId, targetId, direction, limits ?? new DriverLimits(), codecSettings);
 }

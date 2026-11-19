@@ -235,6 +235,167 @@ public sealed class OrchestrationEngine : IAsyncDisposable, INodeTypeCatalogView
         return builder.UseObserver(_observer).Build();
     }
 
+    /// <summary>
+    /// 向某个设备节点（client / server）发送一条业务消息。
+    /// <para>
+    /// 流程：查节点 → 用节点自身 codec 把消息编码成帧载荷 → 写入 socket。
+    /// client 写入当前连接；server 广播给该监听端点的全部入站会话。
+    /// </para>
+    /// <para>
+    /// 返回 <see cref="SendStatus.Sent"/> 仅表示字节已交给内核，不代表设备已执行。
+    /// </para>
+    /// </summary>
+    /// <param name="nodeId">目标设备节点 id。</param>
+    /// <param name="message">业务消息；类型须与该节点 codec 约定一致。</param>
+    /// <param name="ct">取消令牌。</param>
+    public async ValueTask<NodeSendResult> SendAsync(
+        string nodeId,
+        PayloadMessage message,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nodeId);
+
+        var graph = CurrentGraph;
+        var node = graph.Nodes.FirstOrDefault(n => n.Id == nodeId);
+        if (node is null || node.NodeType is not ("client" or "server"))
+        {
+            return NodeSendResult.Fail(
+                SendStatus.InvalidNode, nodeId, $"节点 '{nodeId}' 不存在或不是设备节点");
+        }
+
+        var driver = _driver;
+        if (driver is null || !_running)
+        {
+            return NodeSendResult.Fail(SendStatus.NotReady, nodeId, "编排引擎尚未运行");
+        }
+
+        // 用节点自身 codec 把消息编码成帧载荷
+        var codecId = node.Get("codecId").Trim();
+        if (codecId.Length == 0)
+        {
+            return NodeSendResult.Fail(
+                SendStatus.NoCodec, nodeId, "该节点未配置编解码器，无法把消息序列化成字节");
+        }
+
+        var registration = _codecs.FirstOrDefault(
+            c => string.Equals(c.CodecId, codecId, StringComparison.Ordinal));
+        if (registration is null)
+        {
+            return NodeSendResult.Fail(
+                SendStatus.NoCodec, nodeId, $"编解码器 '{codecId}' 未注册");
+        }
+
+        byte[] payload;
+        try
+        {
+            var codec = registration.Factory(PayloadCodecContext.CreateForStandalone(
+                codecId,
+                nodeId,
+                node.NodeType == "client" ? ConnectionDirection.Outbound : ConnectionDirection.Inbound));
+
+            var buffer = new System.Buffers.ArrayBufferWriter<byte>(256);
+            codec.Encode(message, buffer);
+            payload = buffer.WrittenSpan.ToArray();
+        }
+        catch (Exception ex)
+        {
+            return NodeSendResult.Fail(
+                SendStatus.EncodeFailed, nodeId, ex.GetType().Name + ": " + ex.Message);
+        }
+
+        try
+        {
+            if (node.NodeType == "client")
+            {
+                var deviceId = string.IsNullOrWhiteSpace(node.Get("deviceId")) ? node.Id : node.Get("deviceId");
+                if (!driver.TryGetDevice(deviceId, out var handle) || handle.State != LinkState.Ready)
+                {
+                    return NodeSendResult.Fail(SendStatus.NotReady, nodeId, "客户端链路未就绪");
+                }
+
+                await handle.SendFrameAsync(payload, ct).ConfigureAwait(false);
+                return NodeSendResult.Sent(nodeId, payload.Length, 1);
+            }
+
+            // server：广播给该监听端点的全部入站会话
+            var listenerId = string.IsNullOrWhiteSpace(node.Get("listenerId")) ? node.Id : node.Get("listenerId");
+            var sessions = driver.GetInboundSessions(listenerId);
+            if (sessions.Count == 0)
+            {
+                return NodeSendResult.Fail(SendStatus.NotReady, nodeId, "该监听端点当前没有入站会话");
+            }
+
+            var sent = 0;
+            foreach (var session in sessions)
+            {
+                try
+                {
+                    await session.SendFrameAsync(payload, ct).ConfigureAwait(false);
+                    sent++;
+                }
+                catch (Exception)
+                {
+                    // 单个会话失败不影响其它会话；计数只统计成功的。
+                }
+            }
+
+            return sent > 0
+                ? NodeSendResult.Sent(nodeId, payload.Length, sent)
+                : NodeSendResult.Fail(SendStatus.WriteFailed, nodeId, "全部入站会话写入失败");
+        }
+        catch (Exception ex)
+        {
+            return NodeSendResult.Fail(SendStatus.WriteFailed, nodeId, ex.GetType().Name + ": " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 向设备节点发送一段文本。仅当该节点的 codec 实现 <see cref="ITextPayloadCodec"/> 时可用；
+    /// 否则返回 <see cref="SendStatus.EncodeFailed"/> 并说明原因。
+    /// </summary>
+    public async ValueTask<NodeSendResult> SendTextAsync(string nodeId, string text, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nodeId);
+
+        var graph = CurrentGraph;
+        var node = graph.Nodes.FirstOrDefault(n => n.Id == nodeId);
+        if (node is null || node.NodeType is not ("client" or "server"))
+        {
+            return NodeSendResult.Fail(SendStatus.InvalidNode, nodeId, $"节点 '{nodeId}' 不存在或不是设备节点");
+        }
+
+        var codecId = node.Get("codecId").Trim();
+        var registration = _codecs.FirstOrDefault(
+            c => string.Equals(c.CodecId, codecId, StringComparison.Ordinal));
+        if (registration is null)
+        {
+            return NodeSendResult.Fail(SendStatus.NoCodec, nodeId, $"编解码器 '{codecId}' 未注册");
+        }
+
+        IPayloadCodec codec;
+        try
+        {
+            codec = registration.Factory(PayloadCodecContext.CreateForStandalone(
+                codecId,
+                nodeId,
+                node.NodeType == "client" ? ConnectionDirection.Outbound : ConnectionDirection.Inbound));
+        }
+        catch (Exception ex)
+        {
+            return NodeSendResult.Fail(SendStatus.EncodeFailed, nodeId, ex.GetType().Name + ": " + ex.Message);
+        }
+
+        if (codec is not ITextPayloadCodec textCodec)
+        {
+            return NodeSendResult.Fail(
+                SendStatus.EncodeFailed,
+                nodeId,
+                $"编解码器 '{codecId}' 未实现 ITextPayloadCodec，无法从纯文本构造消息");
+        }
+
+        return await SendAsync(nodeId, textCodec.FromText(text), ct).ConfigureAwait(false);
+    }
+
     /// <summary>当前运行时状态快照。</summary>
     public OrchestrationStatus Status()
     {

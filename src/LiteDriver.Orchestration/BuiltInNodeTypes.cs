@@ -26,12 +26,14 @@ public static class BuiltInNodeTypes
 
         public string DisplayName => "客户端";
 
-        public string Description => "主动拨号到设备。协议与编解码器是节点自身属性；对外输出业务消息流。";
+        public string Description => "主动拨号到设备。协议与编解码器是节点自身属性；in 端口写入的消息发往设备，out 端口输出设备上报。";
 
         public bool IsSource => true;
 
         public IReadOnlyList<PortSpec> Ports { get; } =
         [
+            // 发送通道：上游节点的消息写入本设备 socket（经 codec 编码 + 协议组帧）
+            new PortSpec("tx", "发送", PortDirection.Input, PortTypes.Message),
             new PortSpec("out", "业务消息", PortDirection.Output, PortTypes.Message)
         ];
 
@@ -98,12 +100,14 @@ public static class BuiltInNodeTypes
 
         public string DisplayName => "服务端";
 
-        public string Description => "监听端口接受设备连接。协议与编解码器是节点自身属性；对外输出业务消息流。";
+        public string Description => "监听端口接受设备连接。in 端口写入的消息广播给入站会话，out 端口输出设备上报。";
 
         public bool IsSource => true;
 
         public IReadOnlyList<PortSpec> Ports { get; } =
         [
+            // 发送通道：向上游写入的消息会广播给本监听端点的全部入站会话
+            new PortSpec("tx", "发送", PortDirection.Input, PortTypes.Message),
             new PortSpec("out", "业务消息", PortDirection.Output, PortTypes.Message)
         ];
 

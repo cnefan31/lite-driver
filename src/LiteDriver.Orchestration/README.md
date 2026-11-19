@@ -55,8 +55,8 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 
 | 节点类型 | 输入 | 自身属性 | 输出 |
 | --- | --- | --- | --- |
-| 客户端 `client` | —（链路起点） | **协议 kindId**、**编解码器 codecId**、端点、退避、心跳 | 业务消息 `IMessage` |
-| 服务端 `server` | —（链路起点） | **协议 kindId**、**编解码器 codecId**、监听地址/端口、最大会话 | 业务消息 `IMessage` |
+| 客户端 `client` | 发送 `tx`（可选） | **协议 kindId**、**编解码器 codecId**、端点、退避、心跳 | 上报 `out` |
+| 服务端 `server` | 发送 `tx`（可选） | **协议 kindId**、**编解码器 codecId**、监听地址/端口、最大会话 | 上报 `out` |
 | 变换 `transform` | 消息 `IMessage` | transformId、参数 | 消息 `IMessage` |
 | 处理器 `handler` | 消息 `IMessage` | handlerId、模式 | — |
 | 出口 `sink` | 消息 `Any` | sinkId、目标 | — |
@@ -75,9 +75,49 @@ Console.WriteLine($"打开 http://127.0.0.1:{server.Port}/");
 - 不需要协议节点，也不存在"协议绑定"关系
 - 端口类型仍然约束数据流（`IMessage` 不能接只收 `IFrame` 的端口），但当前内置节点里设备已统一输出 `IMessage`
 
-### 为什么设备节点只有输出
+### 设备节点的收发
 
-设备是链路起点：它从网络读数据，经自身协议的帧格式与自身编解码器转成业务消息，然后向下游输出。它不需要上游输入。
+设备是链路起点，但 TCP 是双向的，所以设备有两个端口：
+
+- **`out`（上报）**：设备读到的数据经自身 codec 解码后，作为业务消息向下游输出
+- **`tx`（发送，可选）**：上游写入的消息经**同一 codec** 编码、由协议组帧，写入 socket
+
+```
+                       ┌── out ──► 处理器 / 出口
+客户端 [自带协议+codec] ─┤
+                       └── tx  ◄── 上游节点的消息（写入设备）
+```
+
+`tx` 是可选的：只做数据采集时不接它。接入后即可在编排里表达"下发命令"。
+
+### 页面上的调试直发
+
+设备节点属性面板里有「调试直发」：输入一段文本，直接用该节点自身的 codec 编码后写入设备，**不经过编排链路**。用于调试阶段快速验证协议与链路是否通。
+
+对应 API：
+
+```http
+POST /api/send
+{ "nodeId": "cli", "text": "HELLO" }
+```
+
+返回 `status`：`Sent` / `NotReady` / `NoCodec` / `EncodeFailed` / `InvalidNode` / `WriteFailed`。
+
+> `Sent` 只表示字节已交给内核，**不代表设备已执行**。
+
+### 文本直发的前提
+
+引擎无法凭空构造任意 codec 的消息类型（如 `TextMessage`），因此需要文本互操作的 codec 实现 `ITextPayloadCodec`：
+
+```csharp
+public sealed class TextCodec : IPayloadCodec, ITextPayloadCodec
+{
+    public PayloadMessage FromText(string text) => PayloadMessage.From(new TextMessage(text), "text");
+    // ...
+}
+```
+
+未实现该接口时，`/api/send` 会返回 `EncodeFailed` 并说明原因，不会静默失败。
 
 ## 扩展自己的节点类型
 
