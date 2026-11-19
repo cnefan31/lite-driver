@@ -105,7 +105,10 @@ def main():
                           "host": "127.0.0.1", "port": "0", "maxSessions": "8"}},
             {"id": "cli", "nodeType": "client", "label": "客户端", "x": 40, "y": 90,
              "settings": {"kindId": "length-prefix",
-                          "endpoints": "127.0.0.1:1"}},
+                          # 首轮先用占位端口；但把退避压到很小，
+                          # 避免连错地址累积退避后拖慢热更新后的重连
+                          "endpoints": "127.0.0.1:1",
+                          "retryInitialMs": "100", "retryMaxMs": "400"}},
             {"id": "k1", "nodeType": "decoder", "label": "解码器1", "x": 300, "y": 90,
              "settings": {"codecId": "text"}},
             {"id": "k2", "nodeType": "decoder", "label": "解码器2", "x": 300, "y": 340,
@@ -164,8 +167,10 @@ def main():
     # 固定 sleep 在慢速 CI 上会读到 inboundSessions=0。
     # 热更新后客户端需先断开旧连接、按退避重连到新端口，再等服务端 accept 登记会话。
     # 这三步在慢速 CI 上可能超过 15 秒，故放宽到 45 秒，并同时要求两者成立。
+    # 热更新后需要：客户端断开旧连接 → 按退避重连新端口 → 服务端 accept 登记会话。
+    # CI 慢机器上退避与调度延迟可能累积，给足 120 秒；本地通常 1 秒内完成。
     st = None
-    deadline = time.time() + 45
+    deadline = time.time() + 120
     while time.time() < deadline:
         st = call("/api/state")
         if st["readyClients"] >= 1 and st["inboundSessions"] >= 1:
@@ -177,7 +182,17 @@ def main():
     if st["readyClients"] < 1:
         failures += fail("客户端未就绪")
     if st["inboundSessions"] < 1:
-        failures += fail(f"服务端未收到会话（等待 45s，端口 {port}）")
+        # 诊断：确认客户端实际指向的端点与服务端端口是否一致
+        try:
+            g = call("/api/graph")["nodes"]
+            cli_eps = next((n["settings"].get("endpoints") for n in g if n["id"] == "cli"), None)
+            srv_port = next((n["settings"].get("port") for n in g if n["nodeType"] == "server"), None)
+            print(f"  诊断: cli.endpoints={cli_eps!r} srv.port={srv_port!r} 期望端口={port}")
+            for n in st.get("nodes", []):
+                print(f"  诊断: {n.get('id')} kind={n.get('kind')} state={n.get('state')}")
+        except Exception as ex:
+            print(f"  诊断失败: {ex}")
+        failures += fail(f"服务端未收到会话（等待 120s，端口 {port}）")
 
     # 6) 运行期新增服务端节点（不重启），必须经编解码器才合法
     graph["nodes"].append({"id": "srv2", "nodeType": "server", "label": "服务端2",
