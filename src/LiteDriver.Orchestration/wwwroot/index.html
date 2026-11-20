@@ -70,13 +70,15 @@
      若把 svg 抬到节点之上，线条会横穿卡片，视觉上一团乱。
      命中问题改用「canvas 本身不拦截、热区单独可点」解决，见 .canvas 与 path[data-edge]。 */
   /* 可见连线在节点之下；命中用独立的上层热区层，两者不互相遮挡。 */
-  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible}
+  /* 层级：可见线(0) < 连线热区(1) < 节点(2)。
+     热区若在节点之上，其 12px 命中描边会盖住端口圆点，导致点端口变成点连线。 */
+  svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:visible}
   /* 热区在最上层，才能点到被节点覆盖的线段；宽度收窄到 12 以免大面积遮挡节点拖动。 */
-  svg.wirehits{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:6}
+  svg.wirehits{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
   svg.wirehits path{pointer-events:stroke}
   /* canvas 只承载节点，本身不吃事件；空白拖动由 wrap 兜底。
      这样位于其下的 svg 热区仍能被点到。 */
-  .canvas{position:absolute;inset:0;pointer-events:none}
+  .canvas{position:absolute;inset:0;pointer-events:none;z-index:2}
   .canvas .node{pointer-events:auto}
 
   /* 节点 */
@@ -708,6 +710,47 @@ function portCenter(nodeId, portId){
   return { x: r.left - wr.left + r.width/2, y: r.top - wr.top + r.height/2 };
 }
 
+/** 计算当前拖线预览线的路径（无拖线时返回 null）。 */
+function linkPreviewPath(){
+  const L = state.linking;
+  if(!L) return null;
+  const a = portAnchor(L.from, L.fromPort);
+  if(!a) return null;
+  let b;
+  if(L.snap && L.snap.anchor){
+    b = L.snap.anchor;
+  } else {
+    const mx = L.x, my = L.y;
+    b = { x: mx, y: my, dir: (mx >= a.x ? -1 : 1) };
+  }
+  return linkPath(a, b, state.edgeStyle);
+}
+
+/**
+ * 只更新预览线：拖线过程中每帧调用，避免整幅重建连线 DOM 造成卡顿。
+ * 预览线是 svg 内一个独立 path，复用同一元素。
+ */
+function updateLinkPreview(){
+  const d = linkPreviewPath();
+  let el = document.getElementById('linkPreview');
+  if(d === null){
+    if(el) el.remove();
+    return;
+  }
+  if(!el){
+    el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    el.setAttribute('id', 'linkPreview');
+    el.setAttribute('stroke', 'var(--accent)');
+    el.setAttribute('stroke-width', '2');
+    el.setAttribute('stroke-dasharray', '6 5');
+    el.setAttribute('fill', 'none');
+    el.setAttribute('opacity', '.95');
+    el.setAttribute('pointer-events', 'none');
+    wires.appendChild(el);
+  }
+  el.setAttribute('d', d);
+}
+
 function drawWires(){
   let html = `<defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
@@ -738,25 +781,29 @@ function drawWires(){
   }
   wirehits.innerHTML = hits;
 
-  if(state.linking){
-    const a = portAnchor(state.linking.from, state.linking.fromPort);
-    if(a){
-      // 吸附优先：若指针附近有兼容端口，预览线直接连到那个端口的锚点
-      let b = null;
-      if(state.linking.snap && state.linking.snap.anchor){
-        b = state.linking.snap.anchor;
-      } else {
-        // 未吸附：把鼠标点当作"待接入的端口"，其法线朝向应与来向相反，
-        // 即鼠标在起点右侧时该虚拟端口朝左(in=-1)，反之朝右(+1)。
-        const mx = state.linking.x, my = state.linking.y;
-        b = { x: mx, y: my, dir: (mx >= a.x ? -1 : 1) };
-      }
-      const d = linkPath(a, b, state.edgeStyle);
-      html += `<path d="${d}" stroke="var(--accent)" stroke-width="2"
-                stroke-dasharray="6 5" fill="none" opacity=".95"/>`;
-    }
-  }
   wires.innerHTML = html;
+  // 预览线是独立元素，重建 html 后需要重新挂上
+  updateLinkPreview();
+}
+
+// 兜底：即使松手发生在画布外或窗口外，也一定结束拖线，避免连线跟随光标
+window.addEventListener('pointerup', () => {
+  if(state.linking) cancelLinking();
+});
+window.addEventListener('pointercancel', () => {
+  if(state.linking) cancelLinking();
+});
+window.addEventListener('blur', () => {
+  if(state.linking) cancelLinking();
+});
+
+/** 结束拖线状态并清理预览与高亮。 */
+function cancelLinking(){
+  state.linking = null;
+  clearHighlight();
+  updateLinkPreview();
+  const hint = $('linkHint');
+  if(hint) hint.classList.remove('show');
 }
 
 /** 开始画布平移（由 canvas 的空白处按下触发）。 */
@@ -771,12 +818,19 @@ function beginPan(ev){
 world.addEventListener('pointermove', ev => {
   // 拖线中：更新预览线终点（canvas 为 pointer-events:none，移动事件落在这里）
   if(state.linking){
+    // 保护：鼠标键已松开却没有收到 pointerup（例如在窗口外松手），
+    // 立即结束拖线状态，避免连线继续跟随光标。
+    if(ev.buttons === 0){
+      cancelLinking();
+      return;
+    }
     const w = screenToWorld(ev.clientX, ev.clientY);
     state.linking.x = w.x;
     state.linking.y = w.y;
     state.linking.snap = findSnapTarget(ev.clientX, ev.clientY);
     markSnapped(state.linking.snap);
-    drawWires();
+    // 只更新预览线，不重建整幅连线（否则每帧重建 DOM 会明显卡顿）
+    updateLinkPreview();
     return;
   }
   const p = state.panning;
@@ -806,9 +860,7 @@ world.addEventListener('pointerup', async ev => {
       const portEl = target && target.closest ? target.closest(`.port[data-dir="${wantDir}"]`) : null;
       if(portEl){ dstNode = portEl.dataset.node; dstPort = portEl.dataset.port; }
     }
-    state.linking = null;
-    clearHighlight();
-    drawWires();
+    cancelLinking();
     if(dstNode) await tryConnect(link, dstNode, dstPort);
     return;
   }
@@ -900,11 +952,12 @@ let drag = null;
 
 world.addEventListener('pointerdown', ev => {
   // 空白处按下：开始平移画布（节点与端口的事件由 canvas 处理，不在此处理）
-  if(ev.target.closest('.node') || ev.target.closest('.port')) return;
+  // 必须排除连线热区：否则这里会开始平移并在 pointerup 时 renderNodes()，
+  // 在 click 触发前销毁被点击的 path，表现为"点连线删不掉"。
+  if(ev.target.closest('.node') || ev.target.closest('.port') ||
+     ev.target.closest('#wirehits')) return;
   if(state.linking){
-    state.linking = null;
-    clearHighlight();
-    drawWires();
+    cancelLinking();
     return;
   }
   state.selected = null;
@@ -933,6 +986,8 @@ canvas.addEventListener('pointerdown', ev => {
     }
     highlightCompatible(state.linking.dataType, state.linking.fromDir);
     $('linkHint').classList.add('show');
+    // 指针捕获：即使松手时在画布外，也能收到 pointerup，避免状态残留
+    try{ world.setPointerCapture(ev.pointerId); }catch(_){}
     drawWires();
     return;
   }
@@ -996,9 +1051,7 @@ window.addEventListener('keydown', e => {
 
   if(e.key === 'Escape'){
     if(state.linking){
-      state.linking = null;
-      clearHighlight();
-      drawWires();
+      cancelLinking();
       setMsg('已取消连线');
       return;
     }
@@ -1056,9 +1109,7 @@ canvas.addEventListener('pointerup', async ev => {
       if(portEl){ dstNode = portEl.dataset.node; dstPort = portEl.dataset.port; }
     }
 
-    state.linking = null;
-    clearHighlight();
-    drawWires();
+    cancelLinking();
 
     if(dstNode){
       await tryConnect(link, dstNode, dstPort);
