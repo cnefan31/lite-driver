@@ -88,6 +88,7 @@ jobs:
         run: |
           dotnet pack src/LiteDriver/LiteDriver.csproj -c Release --no-build -o artifacts /p:Version=${{ steps.ver.outputs.version }}
           dotnet pack src/LiteDriver.Hosting/LiteDriver.Hosting.csproj -c Release --no-build -o artifacts /p:Version=${{ steps.ver.outputs.version }}
+          dotnet pack src/LiteDriver.Orchestration/LiteDriver.Orchestration.csproj -c Release --no-build -o artifacts /p:Version=${{ steps.ver.outputs.version }}
 
       - name: 校验包内容
         run: |
@@ -107,6 +108,16 @@ jobs:
           test -f lib/net8.0/LiteDriver.dll || { echo "::error::缺 net8.0 目标"; exit 1; }
           test -f lib/net10.0/LiteDriver.dll || { echo "::error::缺 net10.0 目标"; exit 1; }
           echo "包结构校验通过"
+
+          # 编排包：只面向 net10.0，且必须声明对 LiteDriver 与 Hosting 的依赖
+          cd .. && rm -rf verify-orch && mkdir verify-orch && cd verify-orch
+          unzip -o -q "../LiteDriver.Orchestration.${VERSION}.nupkg"
+          test -f lib/net10.0/LiteDriver.Orchestration.dll || { echo "::error::编排包缺 net10.0 目标"; exit 1; }
+          for dep in LiteDriver LiteDriver.Hosting NanoServer; do
+            grep -q "id=\"$dep\"" LiteDriver.Orchestration.nuspec || {
+              echo "::error::编排包缺少依赖 $dep"; exit 1; }
+          done
+          echo "编排包结构校验通过"
 
       - name: 演练模式提示
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
@@ -136,6 +147,9 @@ jobs:
             --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json --skip-duplicate
           dotnet nuget push "artifacts/LiteDriver.Hosting.${{ steps.ver.outputs.version }}.nupkg" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json --skip-duplicate
+          dotnet nuget push "artifacts/LiteDriver.Orchestration.${{ steps.ver.outputs.version }}.nupkg" \
             --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json --skip-duplicate
 
