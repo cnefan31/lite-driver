@@ -596,6 +596,30 @@ function portAnchor(nodeId, portId){
  * 保证曲线不会绕入节点矩形。
  */
 /**
+ * 用一串点构造带圆角的折线路径。
+ * @param {Array<{x:number,y:number}>} pts 折线顶点
+ * @param {number} r 圆角半径
+ */
+function roundedPolyline(pts, r){
+  if(pts.length < 2) return '';
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for(let i = 1; i < pts.length - 1; i++){
+    const prev = pts[i-1], cur = pts[i], next = pts[i+1];
+    const v1 = { x: cur.x - prev.x, y: cur.y - prev.y };
+    const v2 = { x: next.x - cur.x, y: next.y - cur.y };
+    const l1 = Math.hypot(v1.x, v1.y) || 1;
+    const l2 = Math.hypot(v2.x, v2.y) || 1;
+    const rr = Math.min(r, l1 / 2, l2 / 2);
+    const p1 = { x: cur.x - v1.x / l1 * rr, y: cur.y - v1.y / l1 * rr };
+    const p2 = { x: cur.x + v2.x / l2 * rr, y: cur.y + v2.y / l2 * rr };
+    d += ` L ${p1.x} ${p1.y} Q ${cur.x} ${cur.y}, ${p2.x} ${p2.y}`;
+  }
+  const last = pts[pts.length-1];
+  d += ` L ${last.x} ${last.y}`;
+  return d;
+}
+
+/**
  * 生成端口间连线路径。支持多种走线风格，可全局切换：
  *  - bezier     : 单段三次贝塞尔（React Flow 默认）
  *  - smoothstep : 圆角正交（水平/垂直段 + 圆角）
@@ -610,15 +634,40 @@ function linkPath(a, b, style){
   // 端口朝向与目标方向一致时，正常沿法线出入。
   // 不一致（翻转后端口在背面）时，不再大幅绕行——只做一个很小的让位，
   // 否则会产生又长又怪的曲线，这正是之前"线条丑陋"的原因。
-  // 起点出线方向：优先沿端口法线；若法线与目标方向相反则直接朝目标走。
+  // 控制点一律沿端口外侧法线外推：a 向左/右外出，b 也从其外侧进入，
+  // 因此曲线永远在节点外侧走，不会鼓包进节点内部。
+  // 注意符号：用 +dir 而非 -dir，-dir 会把控制点推进节点。
   const towards = Math.sign(dx) || 1;
-  const aOut = a.dir === towards ? a.dir : towards;
-  // 终点进入方向：虚拟/真实端口朝 b.dir，进入即沿该方向的反向靠近。
-  // 用 -(b.dir) 表示"从 b.dir 指向的那一侧靠近"，避免与 aOut 抵消成零长度。
-  const bIn = -b.dir;
+  const aOut = a.dir;
+  const bIn = b.dir;
 
   if(style === 'straight'){
     return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+  }
+
+  // 回头边：起点的出线方向与目标方向相反（例如把右侧节点的输出接到左侧节点的
+  // 左边输入端口）。此时任何直线/贝塞尔都会横穿节点本体，必须绕行到节点带外。
+  const facesAway = a.dir !== towards;
+  if(facesAway && a.box && b.box){
+    const stub = 22;
+    const ax = a.x + a.dir * stub;
+    const bx = b.x + b.dir * stub;
+    const topBound = Math.min(a.box.t, b.box.t) - 26;
+    const bottomBound = Math.max(a.box.b, b.box.b) + 26;
+    const upCost = Math.abs(a.y - topBound) + Math.abs(b.y - topBound);
+    const downCost = Math.abs(a.y - bottomBound) + Math.abs(b.y - bottomBound);
+    const busY = upCost <= downCost ? topBound : bottomBound;
+
+    // 先沿法线出节点，再走"总线"横向绕到目标侧，最后垂直进入端口
+    const pts = [
+      { x: a.x, y: a.y },
+      { x: ax, y: a.y },
+      { x: ax, y: busY },
+      { x: bx, y: busY },
+      { x: bx, y: b.y },
+      { x: b.x, y: b.y }
+    ];
+    return roundedPolyline(pts, 12);
   }
 
   if(style === 'step' || style === 'smoothstep'){
