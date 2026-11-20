@@ -108,7 +108,7 @@ def main():
                           # 首轮先用占位端口；但把退避压到很小，
                           # 避免连错地址累积退避后拖慢热更新后的重连
                           "endpoints": "127.0.0.1:1",
-                          "retryInitialMs": "100", "retryMaxMs": "400"}},
+                          "retryInitialMs": "200", "retryMaxMs": "1000"}},
             {"id": "k1", "nodeType": "decoder", "label": "解码器1", "x": 300, "y": 90,
              "settings": {"codecId": "text"}},
             {"id": "k2", "nodeType": "decoder", "label": "解码器2", "x": 300, "y": 340,

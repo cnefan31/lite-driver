@@ -347,10 +347,16 @@ public sealed class LiteDriver : IAsyncDisposable, IDisposable
     private bool SameListener(ListenerSupervisor existing, FrozenListener next)
     {
         var current = _config.ListenerMap.TryGetValue(existing.ListenerId, out var c) ? c : null;
-        return current is not null &&
+        // 端口等价判定：配置端口相同，或新配置的目标端口恰好等于该监听已绑定的
+        // 实际端口。后者出现在 Port=0 的图被回写成真实端口后再次应用的场景——
+        // 若不视为同一监听，会在同一端口上重建监听，客户端连到正在被替换的
+        // 旧 socket，会话永远登记不上。
+        var samePort = current is not null &&
+                       (current.Port == next.Port ||
+                        (next.Port != 0 && existing.BoundPort == next.Port));
+        return current is not null && samePort &&
                current.KindId == next.KindId &&
                current.Host == next.Host &&
-               current.Port == next.Port &&
                current.Backlog == next.Backlog &&
                current.MaxSessions == next.MaxSessions &&
                (current.KindSettings?.GetRawText() ?? "") == (next.KindSettings?.GetRawText() ?? "");
