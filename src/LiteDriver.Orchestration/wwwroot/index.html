@@ -58,8 +58,9 @@
 
   /* 画布 */
   /* 无限画布：world 是一个超大虚拟平面，用 transform 平移缩放 */
+  /* 无限画布：world 是一个足够大的虚拟平面，内容允许溢出到负坐标区域 */
   .world{position:absolute;left:0;top:0;width:12000px;height:12000px;
-    transform-origin:0 0;will-change:transform}
+    transform-origin:0 0;will-change:transform;overflow:visible}
   .canvas-wrap{position:relative;overflow:hidden;cursor:grab;
 
     background:radial-gradient(circle at 1px 1px,rgba(255,255,255,.045) 1px,transparent 0) 0 0/20px 20px,
@@ -930,16 +931,17 @@ function addNode(type, x, y){
       if(opts.length && !settings[f.key]) settings[f.key] = opts[0].value;
     }
   }
-  // 放置位置避让：若与已有节点重叠，自动错开，避免新节点盖在旧节点上看不见
-  const NODE_W = 230, NODE_H = 150, GAP = 16;
-  let px = Math.max(8, Math.round(x));
-  let py = Math.max(8, Math.round(y));
-  for(let guard = 0; guard < 40; guard++){
+  // 放置位置避让：与已有节点重叠时按行列错开，避免新节点盖住旧节点。
+  // 以落点为基准向右、向下试探，不回退到固定坐标，负坐标同样适用。
+  const NODE_W = 300, NODE_H = 170, GAP = 16;
+  const startX = Math.round(x), startY = Math.round(y);
+  let px = startX, py = startY;
+  for(let guard = 0; guard < 60; guard++){
     const clash = state.nodes.some(o =>
       Math.abs(o.x - px) < NODE_W + GAP && Math.abs(o.y - py) < NODE_H + GAP);
     if(!clash) break;
     px += NODE_W + GAP;
-    if(px > 900){ px = 40; py += NODE_H + GAP; }
+    if(px > startX + 3 * (NODE_W + GAP)){ px = startX; py += NODE_H + GAP; }
   }
 
   const n = {
@@ -1108,8 +1110,9 @@ canvas.addEventListener('pointermove', ev => {
   if(state.linking) return;
   if(!drag) return;
   const n = nodeById(drag.id);
-  n.x = Math.max(0, drag.ox + (ev.clientX - drag.startX));
-  n.y = Math.max(0, drag.oy + (ev.clientY - drag.startY));
+  // 无限画布：坐标可以为负，不做边界钳制，否则无法把节点往左/上拖出原点
+  n.x = drag.ox + (ev.clientX - drag.startX);
+  n.y = drag.oy + (ev.clientY - drag.startY);
   const el = canvas.querySelector(`.node[data-id="${drag.id}"]`);
   if(el){ el.style.left = n.x+'px'; el.style.top = n.y+'px'; }
   drawWires();
