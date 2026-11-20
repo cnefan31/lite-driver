@@ -27,7 +27,6 @@ public static class GraphCompiler
         GraphMigration.Migrate(graph);
 
         var types = nodeTypes ?? DefaultNodeTypes();
-        var view = catalogView ?? new KindOnlyView(knownKinds);
 
         var issues = new List<CompileIssue>();
         var nodeMap = new Dictionary<string, GraphNode>(StringComparer.Ordinal);
@@ -52,6 +51,10 @@ public static class GraphCompiler
             return new CompileResult(false, null, issues, [], []);
         }
 
+        // nodeMap 就绪后再构造视图，使其能回答「某节点有哪些端口」，
+        // 供占位节点这类端口代理解析其绑定目标。
+        var view = catalogView ?? new KindOnlyView(knownKinds, types, nodeMap);
+
         foreach (var node in graph.Nodes)
         {
             if (string.IsNullOrWhiteSpace(node.NodeType))
@@ -68,35 +71,104 @@ public static class GraphCompiler
                 continue;
             }
 
-            // 占位节点是纯布局元素，跳过业务校验
-            if (type.IsLayoutOnly)
-            {
-                continue;
-            }
-
+            // 端口代理（占位）不生成设备，但仍需校验其绑定是否有效
             var error = type.Validate(node, view);
             if (error is not null)
             {
                 issues.Add(new CompileIssue("node_invalid", $"节点 '{node.Label}'：{error}", node.Id));
+                continue;
+            }
+
+            // 端口代理还需校验绑定目标是否真实存在
+            if (type.IsLayoutOnly &&
+                !TryResolveProxy(node, types, nodeMap, view, out var tn, out var tp))
+            {
+                issues.Add(new CompileIssue(
+                    "node_invalid",
+                    $"节点 '{node.Label}'：绑定的端口 '{node.Get(BuiltInNodeTypes.PlaceholderType.TargetNodeKey)}.{node.Get(BuiltInNodeTypes.PlaceholderType.TargetPortKey)}' 不存在",
+                    node.Id));
             }
         }
 
-        // ---- 2) 连线：端口存在性 + 方向 + 类型兼容 ----
+        // ---- 2) 连线：先把经过「端口代理」（占位节点）的端点解析成真实端口 ----
+        var effectiveEdges = new List<GraphEdge>(graph.Edges.Count);
         foreach (var edge in graph.Edges)
         {
-            // 端点若是占位节点，该边不参与数据流（占位仅布局用），直接跳过
-            if (nodeMap.TryGetValue(edge.From, out var fromProbe) &&
-                types.Find(fromProbe.NodeType)?.IsLayoutOnly == true)
+            var fromId = edge.From;
+            var fromPort = edge.FromPort;
+            var toId = edge.To;
+            var toPort = edge.ToPort;
+            var ok = true;
+
+            if (nodeMap.TryGetValue(edge.From, out var fromNode) &&
+                types.Find(fromNode.NodeType) is { } ft && ft.IsLayoutOnly)
+            {
+                if (!TryResolveProxy(fromNode, types, nodeMap, view, out var tNode, out var tPort))
+                {
+                    issues.Add(new CompileIssue(
+                        "placeholder_unbound",
+                        $"占位节点 '{fromNode.Label}' 未绑定有效的输出端口", fromNode.Id));
+                    ok = false;
+                }
+                else
+                {
+                    fromId = tNode;
+                    fromPort = tPort;
+                }
+            }
+
+            if (ok && nodeMap.TryGetValue(edge.To, out var toNode) &&
+                types.Find(toNode.NodeType) is { } tt && tt.IsLayoutOnly)
+            {
+                if (!TryResolveProxy(toNode, types, nodeMap, view, out var pNode, out var pPort))
+                {
+                    issues.Add(new CompileIssue(
+                        "placeholder_unbound",
+                        $"占位节点 '{toNode.Label}' 未绑定有效的输入端口", toNode.Id));
+                    ok = false;
+                }
+                else
+                {
+                    toId = pNode;
+                    toPort = pPort;
+                }
+            }
+
+            if (!ok)
             {
                 continue;
             }
 
-            if (nodeMap.TryGetValue(edge.To, out var toProbe) &&
-                types.Find(toProbe.NodeType)?.IsLayoutOnly == true)
+            effectiveEdges.Add(new GraphEdge
             {
-                continue;
-            }
+                Id = edge.Id,
+                From = fromId,
+                FromPort = fromPort,
+                To = toId,
+                ToPort = toPort
+            });
+        }
 
+        // 同一输入端口只能接一条线；经代理解析后可能出现重复，需显式报出
+        var inputOwners = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var e in effectiveEdges)
+        {
+            var key = e.To + "\u0000" + e.ToPort;
+            if (inputOwners.ContainsKey(key))
+            {
+                issues.Add(new CompileIssue(
+                    "input_port_conflict",
+                    $"输入端口 '{e.To}.{e.ToPort}' 已有一条连线，同一输入端口只能接一条",
+                    e.To));
+            }
+            else
+            {
+                inputOwners[key] = e.Id;
+            }
+        }
+
+        foreach (var edge in effectiveEdges)
+        {
             if (!nodeMap.TryGetValue(edge.From, out var from))
             {
                 issues.Add(new CompileIssue("edge_from_missing", $"连线起点 '{edge.From}' 不存在", edge.From));
@@ -161,8 +233,8 @@ public static class GraphCompiler
         }
 
         // ---- 3) 必连端口 + 链路完整性 ----
-        CheckRequiredPorts(graph, types, issues);
-        CheckNoCycles(graph, nodeMap, issues);
+        CheckRequiredPorts(graph, types, effectiveEdges, issues);
+        CheckNoCycles(graph, nodeMap, effectiveEdges, issues);
 
         if (issues.Count > 0)
         {
@@ -170,7 +242,7 @@ public static class GraphCompiler
         }
 
         // ---- 4) 生成 DriverConfig 与拓扑 ----
-        return BuildConfig(graph, types, knownKinds, issues);
+        return BuildConfig(graph, types, knownKinds, effectiveEdges, issues);
     }
 
     /// <summary>默认节点类型目录（六个内置类型）。</summary>
@@ -188,6 +260,7 @@ public static class GraphCompiler
     private static void CheckRequiredPorts(
         OrchestrationGraph graph,
         NodeTypeCatalog types,
+        IReadOnlyList<GraphEdge> edges,
         List<CompileIssue> issues)
     {
         foreach (var node in graph.Nodes)
@@ -205,7 +278,8 @@ public static class GraphCompiler
                     continue;
                 }
 
-                var connected = graph.Edges.Any(e =>
+                // 用解析后的边判断：占位节点代理的连线也算作该端口已连接
+                var connected = edges.Any(e =>
                     string.Equals(e.To, node.Id, StringComparison.Ordinal) &&
                     string.Equals(e.ToPort, port.Id, StringComparison.Ordinal));
 
@@ -224,6 +298,7 @@ public static class GraphCompiler
     private static void CheckNoCycles(
         OrchestrationGraph graph,
         IReadOnlyDictionary<string, GraphNode> nodeMap,
+        IReadOnlyList<GraphEdge> edges,
         List<CompileIssue> issues)
     {
         var adjacency = graph.Nodes.ToDictionary(
@@ -231,7 +306,7 @@ public static class GraphCompiler
             _ => new List<string>(),
             StringComparer.Ordinal);
 
-        foreach (var e in graph.Edges)
+        foreach (var e in edges)
         {
             // 回写边不算「数据回流」：设备把处理结果写回 socket 是正当闭环。
             // · 目标端口是设备 tx —— 设备写入通道，与 out 上报是两条独立单向通道
@@ -299,6 +374,7 @@ public static class GraphCompiler
         OrchestrationGraph graph,
         NodeTypeCatalog types,
         IReadOnlyCollection<string> knownKinds,
+        IReadOnlyList<GraphEdge> edges,
         List<CompileIssue> issues)
     {
         var devices = new List<DeviceDescriptor>();
@@ -433,7 +509,7 @@ public static class GraphCompiler
 
             while (guard++ < 64)
             {
-                var edge = graph.Edges.FirstOrDefault(e =>
+                var edge = edges.FirstOrDefault(e =>
                     string.Equals(e.From, current, StringComparison.Ordinal) &&
                     (current != node.Id || string.Equals(e.FromPort, outPort, StringComparison.Ordinal)));
 
@@ -541,12 +617,73 @@ public static class GraphCompiler
         return true;
     }
 
-    /// <summary>只有 kind 注册信息的目录视图（用于不需要其它注册表的场景）。</summary>
+    /// <summary>
+    /// 解析「端口代理」（占位节点）绑定的真实节点与端口。
+    /// 返回 <c>false</c> 表示未绑定或绑定目标不存在。
+    /// </summary>
+    private static bool TryResolveProxy(
+        GraphNode proxy,
+        NodeTypeCatalog types,
+        IReadOnlyDictionary<string, GraphNode> nodeMap,
+        INodeTypeCatalogView view,
+        out string targetNodeId,
+        out string targetPortId)
+    {
+        targetNodeId = "";
+        targetPortId = "";
+        var nid = proxy.Get(BuiltInNodeTypes.PlaceholderType.TargetNodeKey).Trim();
+        var pid = proxy.Get(BuiltInNodeTypes.PlaceholderType.TargetPortKey).Trim();
+        if (nid.Length == 0 || pid.Length == 0)
+        {
+            return false;
+        }
+
+        if (!nodeMap.TryGetValue(nid, out var target))
+        {
+            return false;
+        }
+
+        var targetType = types.Find(target.NodeType);
+        if (targetType is null)
+        {
+            return false;
+        }
+
+        if (!targetType.PortsOf(target, view).Any(p => string.Equals(p.Id, pid, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        targetNodeId = nid;
+        targetPortId = pid;
+        return true;
+    }
+
+    /// <summary>编译器内部使用的目录视图：注册表 + 图上节点，可回答端口查询。</summary>
     private sealed class KindOnlyView : INodeTypeCatalogView
     {
         private readonly IReadOnlyCollection<string> _kinds;
+        private readonly NodeTypeCatalog? _types;
+        private readonly IReadOnlyDictionary<string, GraphNode>? _nodes;
 
-        public KindOnlyView(IReadOnlyCollection<string> kinds) => _kinds = kinds;
+        public KindOnlyView(
+            IReadOnlyCollection<string> kinds,
+            NodeTypeCatalog? types = null,
+            IReadOnlyDictionary<string, GraphNode>? nodes = null)
+        {
+            _kinds = kinds;
+            _types = types;
+            _nodes = nodes;
+        }
+
+        /// <summary>解析某节点实例的端口，供占位节点镜像其绑定目标。</summary>
+        public IReadOnlyList<PortSpec>? PortsOf(string nodeId)
+        {
+            if(_nodes is null || _types is null) return null;
+            if(!_nodes.TryGetValue(nodeId, out var node)) return null;
+            var t = _types.Find(node.NodeType);
+            return t?.PortsOf(node, this);
+        }
 
         public bool HasKind(string kindId) => _kinds.Contains(kindId);
 

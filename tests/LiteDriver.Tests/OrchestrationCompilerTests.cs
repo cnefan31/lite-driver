@@ -514,32 +514,86 @@ public sealed class OrchestrationCompilerTests
 
     // ---------------- 其它 ----------------
 
-    [Fact]
-    public void Placeholder_ShouldNotAffectCompilation()
-    {
-        // 占位节点纯布局，没有端口，不应产生任何校验问题
-        var g = Graph([Client("c"), Decoder("d"), Handler("h"), Node("ph", "placeholder")],
-            ("c", "out", "d", "in"), ("d", "out", "h", "in"));
-
-        var result = Compile(g);
-        Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
-    }
+    /// <summary>构造一个绑定到指定节点端口的占位节点（端口代理）。</summary>
+    private static GraphNode Proxy(string id, string targetNode, string targetPort) =>
+        Node(id, "placeholder", ("targetNode", targetNode), ("targetPort", targetPort));
 
     [Fact]
-    public void Placeholder_ShouldHaveNoPorts()
+    public void Placeholder_ShouldExposeOnlyProxyPort()
     {
+        // 静态端口为空，实际端口由绑定目标决定
         var t = Types.Find("placeholder")!;
         Assert.Empty(t.Ports);
         Assert.True(t.IsLayoutOnly);
     }
 
     [Fact]
-    public void Placeholder_ShouldNotRequireConnection()
+    public void Placeholder_WithoutBinding_ShouldBeRejected()
     {
-        // 孤立占位不应触发 port_required_unconnected
-        var g = Graph([Node("only", "placeholder")]);
+        var g = Graph([Client("c"), Decoder("d"), Handler("h"), Node("ph", "placeholder")],
+            ("c", "out", "d", "in"), ("d", "out", "h", "in"));
+
         var result = Compile(g);
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "node_invalid" && i.NodeId == "ph");
+    }
+
+    [Fact]
+    public void Placeholder_ShouldResolveEdgeToRealTargetPort()
+    {
+        // 客户端 → 解码器 的连线改为经过代理：代理绑定 decoder.in，
+        // 编译后应等价于 client.out → decoder.in
+        var g = Graph([Client("c"), Decoder("d"), Handler("h"), Proxy("ph", "d", "in")],
+            ("c", "out", "ph", "p"),
+            ("d", "out", "h", "in"));
+
+        var result = Compile(g);
+
+        Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
+        // 解码器的必连输入被代理满足，说明连线已解析到真实端口
         Assert.DoesNotContain(result.Issues, i => i.Code == "port_required_unconnected");
+    }
+
+    [Fact]
+    public void Placeholder_OnOutputSide_ShouldResolveToRealSource()
+    {
+        // 代理绑定 decoder.out，从代理连到处理器应等价于 decoder.out → handler.in
+        var g = Graph([Client("c"), Decoder("d"), Handler("h"), Proxy("ph", "d", "out")],
+            ("c", "out", "d", "in"),
+            ("ph", "p", "h", "in"));
+
+        var result = Compile(g);
+        Assert.True(result.Ok, string.Join("；", result.Issues.Select(i => i.Message)));
+    }
+
+    [Fact]
+    public void Placeholder_BoundToWrongDirection_ShouldFailTypeCheck()
+    {
+        // 代理绑定 decoder.in（输入），却从客户端输出连它 —— 方向应为输出，
+        // 解析后等价于 client.out → decoder.in，类型 RawFrame 相同，应合法；
+        // 但若代理绑定 handler.in（消息输入）而源是 RawFrame，则必须被拒。
+        var g = Graph([Client("c"), Decoder("d"), Handler("h"), Proxy("ph", "h", "in")],
+            ("c", "out", "ph", "p"),
+            ("d", "out", "h", "in"));
+
+        var result = Compile(g);
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "edge_type_mismatch");
+    }
+
+    [Fact]
+    public void Placeholder_TwoEdgesToSamePort_ShouldConflict()
+    {
+        // 两条连线经不同代理指向同一输入端口，应报冲突
+        var g = Graph([Client("c"), Decoder("d"), Handler("h"),
+                       Proxy("ph1", "d", "in"), Proxy("ph2", "d", "in")],
+            ("c", "out", "ph1", "p"),
+            ("c", "out", "ph2", "p"),
+            ("d", "out", "h", "in"));
+
+        var result = Compile(g);
+        Assert.False(result.Ok);
+        Assert.Contains(result.Issues, i => i.Code == "input_port_conflict");
     }
 
     [Fact]

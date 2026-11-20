@@ -200,6 +200,8 @@ def main():
                                         "host": "127.0.0.1", "port": "0", "maxSessions": "4"}})
     graph["nodes"].append({"id": "k3", "nodeType": "decoder", "label": "解码器3", "x": 300, "y": 500,
                            "settings": {"codecId": "text"}})
+    # 同一输入端口只接一条：先把 sk.in 上原有的连线移除
+    graph["edges"] = [e for e in graph["edges"] if not (e["to"] == "sk" and e["toPort"] == "in")]
     graph["edges"].append({"id": "e5", "from": "srv2", "fromPort": "out", "to": "k3", "toPort": "in"})
     graph["edges"].append({"id": "e6", "from": "k3", "fromPort": "out", "to": "sk", "toPort": "in"})
     r3 = call("/api/apply", graph)
@@ -219,6 +221,9 @@ def main():
     # 7) 删除第二个服务端
     graph["nodes"] = [n for n in graph["nodes"] if n["id"] not in ("srv2", "k3")]
     graph["edges"] = [e for e in graph["edges"] if e["from"] not in ("srv2", "k3") and e["to"] not in ("srv2", "k3")]
+    # 恢复出口的连线，否则 sk.in 变成悬空必连端口
+    if not any(e["to"] == "sk" and e["toPort"] == "in" for e in graph["edges"]):
+        graph["edges"].append({"id": "e7", "from": "k2", "fromPort": "out", "to": "sk", "toPort": "in"})
     r4 = call("/api/apply", graph)
     time.sleep(2)
     st3 = call("/api/state")

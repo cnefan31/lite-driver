@@ -163,6 +163,7 @@
   .node.placeholder{width:150px;background:transparent;border:1.5px dashed var(--line-2);
     box-shadow:none;opacity:.72}
   .node.placeholder .node-head{background:transparent;border-bottom:none}
+  .port.proxy .pdot{border-style:dashed;border-color:var(--accent)}
   .ph-body{display:flex;align-items:center;justify-content:center;gap:6px;
     padding:14px 0 18px;color:var(--muted);font-size:11px}
   .ph-ic{font-size:14px;opacity:.7}
@@ -498,9 +499,32 @@ function renderNodes(){
           <span class="pio out">输出</span>
           <span class="pdot"></span></div>`).join('');
     const layoutOnly = !!t && t.ports.length === 0 && n.nodeType === 'placeholder';
-    const portHtml = layoutOnly
-      ? `<div class="ph-body"><span class="ph-ic">⤢</span><span>布局占位</span></div>`
-      : `<div class="ports">${inRows}${outRows}</div>`;
+
+    // 占位＝端口代理：绑定成功时渲染一个镜像端口，方向与类型取自真实端口，
+    // 因此可以像普通端口一样被拖线、吸附与类型校验。
+    let portHtml;
+    if(layoutOnly){
+      const proxy = proxyPortOf(n);
+      if(proxy){
+        const dir = proxy.port.direction === 'Input' ? 'in' : 'out';
+        const tag = dir === 'in' ? '输入' : '输出';
+        const body = dir === 'in'
+          ? `<span class="pdot"></span><span class="pio in">${tag}</span>
+             <span class="plabel">${esc(proxy.port.label)}</span>
+             <span class="ptype">${esc(shortType(proxy.port.dataType))}</span>`
+          : `<span class="ptype">${esc(shortType(proxy.port.dataType))}</span>
+             <span class="plabel">${esc(proxy.port.label)}</span>
+             <span class="pio out">${tag}</span><span class="pdot"></span>`;
+        portHtml = `<div class="ports"><div class="port ${dir} proxy"
+             data-node="${n.id}" data-port="p" data-dir="${dir}"
+             data-type="${esc(proxy.port.dataType)}"
+             title="代理 ${esc(proxy.owner.label)} 的「${esc(proxy.port.label)}」端口">${body}</div></div>`;
+      } else {
+        portHtml = `<div class="ph-body"><span class="ph-ic">⤷</span><span>未绑定端口</span></div>`;
+      }
+    } else {
+      portHtml = `<div class="ports">${inRows}${outRows}</div>`;
+    }
     const accent = n.color || colorOf(n.nodeType);
     const phClass = layoutOnly ? ' placeholder' : '';
     return `<div class="node${sel}${err}${n.flipped?' flipped':''}${phClass}" data-id="${n.id}" data-type="${esc(n.nodeType)}"
@@ -899,8 +923,9 @@ function addNode(type, x, y){
   const settings = {};
   for(const f of t.fields){
     if(f.defaultValue != null) settings[f.key] = f.defaultValue;
-    // 注册表驱动的字段：默认取第一个候选，避免新节点必然校验失败
-    if(f.optionsSource){
+    // 注册表驱动的字段：默认取第一个候选，避免新节点必然校验失败。
+    // 绑定类选项（nodes/ports）依赖已有节点，新建时留空由用户选择。
+    if(f.optionsSource && f.optionsSource !== 'nodes' && f.optionsSource !== 'ports'){
       const opts = resolveOptions(f);
       if(opts.length && !settings[f.key]) settings[f.key] = opts[0].value;
     }
@@ -1124,6 +1149,17 @@ canvas.addEventListener('pointerup', async ev => {
 });
 
 /** 连线前先问后端「这两个端口能不能连」，避免用户连出非法边。 */
+/** 取某个节点上某端口的数据类型；占位节点按其绑定目标解析。 */
+function portDataType(node, portId){
+  if(node.nodeType === 'placeholder'){
+    const proxy = proxyPortOf(node);
+    return proxy ? proxy.port.dataType : null;
+  }
+  const t = typeOf(node.nodeType);
+  const p = t && (t.ports || []).find(x => x.id === portId);
+  return p ? p.dataType : null;
+}
+
 async function tryConnect(link, toNode, toPort){
   // 反向拖线时，起拖端是输入、落点是输出，需要交换成「输出 → 输入」
   const reversed = link.fromDir === 'in';
@@ -1136,17 +1172,33 @@ async function tryConnect(link, toNode, toPort){
   if(!from || !to) return;
   if(from.id === to.id){ setMsg('不能连接到自己', 'bad'); return; }
 
-  try{
-    const r = await api('/api/connectable', {
-      fromNodeType: from.nodeType, fromPort: srcPort,
-      toNodeType: to.nodeType, toPort: dstPort
-    });
-    if(!r.ok){ setMsg('无法连接：' + (r.reason || '类型不匹配'), 'bad'); toast('端口类型不匹配', 'bad'); return; }
-  }catch(e){
-    // 后端不可用时退回前端本地判断
-    const tp = typeOf(to.nodeType)?.ports.find(p => p.id === dstPort);
-    if(tp && !(tp.dataType === link.dataType || tp.dataType === 'Any' || link.dataType === 'Any')){
-      setMsg('无法连接：端口类型不匹配', 'bad'); return;
+  // 端口代理（占位节点）的端口是动态的，后端按类型查不到，改为按画布上的端口元素校验
+  const involvesProxy = from.nodeType === 'placeholder' || to.nodeType === 'placeholder';
+  if(involvesProxy){
+    const srcType = portDataType(from, srcPort);
+    const dstType = portDataType(to, dstPort);
+    if(srcType === null || dstType === null){
+      setMsg('无法连接：端口不存在', 'bad'); return;
+    }
+    const okType = srcType === dstType || srcType === 'Any' || dstType === 'Any';
+    if(!okType){
+      setMsg(`无法连接：${shortType(srcType)} 不能接入 ${shortType(dstType)}，中间需要转换节点`, 'bad');
+      toast('端口类型不匹配', 'bad');
+      return;
+    }
+  } else {
+    try{
+      const r = await api('/api/connectable', {
+        fromNodeType: from.nodeType, fromPort: srcPort,
+        toNodeType: to.nodeType, toPort: dstPort
+      });
+      if(!r.ok){ setMsg('无法连接：' + (r.reason || '类型不匹配'), 'bad'); toast('端口类型不匹配', 'bad'); return; }
+    }catch(e){
+      // 后端不可用时退回前端本地判断
+      const tp = typeOf(to.nodeType)?.ports.find(p => p.id === dstPort);
+      if(tp && !(tp.dataType === link.dataType || tp.dataType === 'Any' || link.dataType === 'Any')){
+        setMsg('无法连接：端口类型不匹配', 'bad'); return;
+      }
     }
   }
 
@@ -1200,7 +1252,7 @@ wirehits.addEventListener('pointermove', ev => {
 /* ---------------- 属性面板 ---------------- */
 
 /** 解析字段候选：显式 Options 优先，否则取注册表对应清单。 */
-function resolveOptions(f){
+function resolveOptions(f, node){
   if(f.options && f.options.length) return f.options;
   const map = {
     kinds: state.registry && state.registry.kinds,
@@ -1209,7 +1261,39 @@ function resolveOptions(f){
     handlers: state.registry && state.registry.handlers,
     sinks: state.registry && state.registry.sinks
   };
+
+  if(f.optionsSource === 'nodes'){
+    // 可绑定的节点：排除占位自身与其它占位节点
+    return state.nodes
+      .filter(n => n.id !== (node && node.id) && n.nodeType !== 'placeholder')
+      .map(n => ({ value: n.id, label: (n.label || n.nodeType) + ' (' + n.nodeType + ')' }));
+  }
+
+  if(f.optionsSource === 'ports'){
+    // 可选端口：取决于已选的绑定节点
+    const targetId = node && node.settings && node.settings.targetNode;
+    const t = targetId ? nodeById(targetId) : null;
+    const tt = t ? typeOf(t.nodeType) : null;
+    if(!tt) return [];
+    return (tt.ports || []).map(p => ({
+      value: p.id,
+      label: `${p.label}（${p.direction === 'Input' ? '输入' : '输出'} · ${shortType(p.dataType)}）`
+    }));
+  }
+
   return (f.optionsSource && map[f.optionsSource]) || [];
+}
+
+/** 解析占位节点绑定的真实端口（方向/类型/label），未绑定时返回 null。 */
+function proxyPortOf(n){
+  if(!n || n.nodeType !== 'placeholder') return null;
+  const t = nodeById(n.settings && n.settings.targetNode);
+  const tt = t ? typeOf(t.nodeType) : null;
+  if(!tt) return null;
+  const pid = n.settings && n.settings.targetPort;
+  const p = (tt.ports || []).find(x => x.id === pid);
+  if(!p) return null;
+  return { port: p, owner: t };
 }
 
 function renderProps(){
@@ -1265,7 +1349,7 @@ function renderProps(){
         ${f.help?`<div class="hint">${esc(f.help)}</div>`:''}</div>`;
     } else if(f.kind === 'Select'){
       // 候选来自后端注册表时，渲染成「请选择 + 注册项」
-      const opts = resolveOptions(f);
+      const opts = resolveOptions(f, n);
       html += `<div class="field"><label>${esc(f.label)}</label>
         <select id="p-${esc(f.key)}">
           <option value="" ${v===''?'selected':''}>— 请选择 —</option>
@@ -1308,6 +1392,13 @@ function renderProps(){
     bind(f.key, ev => {
       n.settings[f.key] = ev.target.value;
       state.errIds.delete(n.id);
+      // 占位是端口代理：改绑定会让端口方向/类型变化，需同时刷新画布与属性面板
+      if(n.nodeType === 'placeholder'){
+        if(f.key === 'targetNode') n.settings.targetPort = '';
+        renderNodes();
+        renderProps();
+        return;
+      }
       renderNodes();
     }, (f.kind==='Select'||f.kind==='Bool') ? 'change' : 'input');
   }
@@ -1491,7 +1582,8 @@ function defaultSettings(typeId){
   if(!t) return s;
   for(const f of t.fields){
     if(f.defaultValue != null) s[f.key] = f.defaultValue;
-    if(f.optionsSource){
+    // 绑定类选项（nodes/ports）依赖已有节点，新建时留空由用户选择
+    if(f.optionsSource && f.optionsSource !== 'nodes' && f.optionsSource !== 'ports'){
       const opts = resolveOptions(f);
       if(opts.length && !s[f.key]) s[f.key] = opts[0].value;
     }

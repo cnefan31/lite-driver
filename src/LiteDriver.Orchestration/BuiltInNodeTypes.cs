@@ -352,35 +352,64 @@ public static class BuiltInNodeTypes
     }
 
     /// <summary>
-    /// 占位节点：仅用于布局，不参与任何数据流。
+    /// 占位节点：<b>端口代理</b>。绑定任意节点的任意输入/输出端口，
+    /// 在画布上作为该端口的一个可移动副本存在，用来把走线整理整齐。
     /// <para>
-    /// 作用：在图里放一个或多个锚点占位，用于把连线撑开、绕开拥挤区域，
-    /// 或让某个端口的走线从指定位置经过，从而改善整体布局。
-    /// 占位节点没有端口、不校验、不运行，编译时会被忽略。
+    /// 连线连到占位节点，编译时会被解析为真实的目标节点与端口，
+    /// 因此它不改变数据流语义，只改变线路的接入位置。
     /// </para>
     /// </summary>
     public sealed class PlaceholderType : INodeType
     {
+        /// <summary>占位节点对外暴露的唯一端口 id。</summary>
+        public const string ProxyPortId = "p";
+
+        /// <summary>绑定目标节点 id 的设置键。</summary>
+        public const string TargetNodeKey = "targetNode";
+
+        /// <summary>绑定目标端口 id 的设置键。</summary>
+        public const string TargetPortKey = "targetPort";
+
         public string TypeId => "placeholder";
 
         public string DisplayName => "占位";
 
-        public string Description => "仅用于布局占位：没有端口、不参与数据流，用来撑开走线空间。";
+        public string Description => "绑定某个节点的输入/输出端口，作为该端口的可移动副本，用于整理走线。";
 
-        /// <summary>占位不产生数据，也不接收数据。</summary>
         public bool IsSource => false;
 
-        /// <summary>占位节点仅用于布局，不参与编译，因此无需端口。</summary>
+        /// <summary>不生成设备/监听；连线由编译器解析到真实端口。</summary>
         public bool IsLayoutOnly => true;
 
+        /// <summary>静态端口为空，实际端口随绑定目标变化。</summary>
         public IReadOnlyList<PortSpec> Ports { get; } = [];
 
         public IReadOnlyList<NodeField> Fields { get; } =
         [
-            new NodeField("note", "备注", NodeFieldKind.Text, "", "说明这个占位用来做什么")
+            new NodeField(TargetNodeKey, "绑定节点", NodeFieldKind.Select, "",
+                "选择要镜像哪个节点的端口", OptionsSource: "nodes"),
+            new NodeField(TargetPortKey, "绑定端口", NodeFieldKind.Select, "",
+                "选择该节点上的哪个端口", OptionsSource: "ports")
         ];
 
-        public string? Validate(GraphNode node, INodeTypeCatalogView catalog) => null;
+        /// <summary>端口依赖整张图解析，由编译器负责；此处返回空。</summary>
+        public IReadOnlyList<PortSpec> PortsOf(GraphNode node, INodeTypeCatalogView catalog) => [];
+
+        public string? Validate(GraphNode node, INodeTypeCatalogView catalog)
+        {
+            // 目标是否存在需要整张图，由编译器校验；这里只检查必填
+            if (node.Get(TargetNodeKey).Trim().Length == 0)
+            {
+                return "未绑定节点";
+            }
+
+            if (node.Get(TargetPortKey).Trim().Length == 0)
+            {
+                return "未绑定端口";
+            }
+
+            return null;
+        }
     }
 }
 

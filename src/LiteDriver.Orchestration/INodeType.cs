@@ -27,8 +27,17 @@ public interface INodeType
     /// </summary>
     bool IsLayoutOnly => false;
 
-    /// <summary>该类型声明的端口。</summary>
+    /// <summary>该类型声明的静态端口。</summary>
     IReadOnlyList<PortSpec> Ports { get; }
+
+    /// <summary>
+    /// 解析某个节点实例实际暴露的端口。
+    /// <para>
+    /// 默认返回静态 <see cref="Ports"/>；占位节点等"端口代理"类型可以据此
+    /// 按自身配置动态返回端口（例如镜像其绑定目标的端口）。
+    /// </para>
+    /// </summary>
+    IReadOnlyList<PortSpec> PortsOf(GraphNode node, INodeTypeCatalogView catalog) => Ports;
 
     /// <summary>该类型可编辑的字段。</summary>
     IReadOnlyList<NodeField> Fields { get; }
